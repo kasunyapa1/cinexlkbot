@@ -2,6 +2,7 @@ import os
 import re
 import io
 import asyncio
+from datetime import datetime, timedelta
 import aiohttp
 from pyrogram import Client, filters, idle
 from pyrogram.types import (
@@ -47,8 +48,9 @@ PORT = int(os.environ.get("PORT", "8080"))
 app = Client("all_in_one_movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
+vip_users_col = db_client["MovieDB"]["vip_users"]
 
-# Telegram Bot API Helper for Stars Invoices
+# Telegram Stars Helper
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     data = {
@@ -66,7 +68,7 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# HELPER FUNCTIONS (IMDb / OMDb & SMART LANGUAGE PARSER)
+# HELPER FUNCTIONS (IMDb & LANGUAGE)
 # =========================================================
 def parse_movie_query(filename: str):
     name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
@@ -83,20 +85,15 @@ def parse_movie_query(filename: str):
 
     return title, year
 
-# චිත්‍රපටයේ නිවැරදි ප්‍රධාන භාෂාව (Single Language) පමණක් වෙන් කර ගැනීම
 def get_clean_language(raw_lang: str, filename: str = "") -> str:
-    # 1. File Name එකේ පැහැදිලිව භාෂාවක් සඳහන්ව ඇත්නම් (උදා: Sinhala, Hindi, Tamil)
     fn_lower = filename.lower()
     common_langs = ["sinhala", "tamil", "hindi", "malayalam", "telugu", "korean", "japanese", "english", "chinese", "spanish", "french"]
     for lang in common_langs:
         if re.search(r"\b" + lang + r"\b", fn_lower):
             return lang.capitalize()
 
-    # 2. OMDb එකෙන් එන භාෂාව පිරිසිදු කිරීම (පළමු ප්‍රධාන භාෂාව පමණක් තෝරා ගැනීම)
     if raw_lang and raw_lang != "N/A":
-        # 'English, Japanese' ආවොත් පළමු එක 'English' ලෙස වෙන් කර ගනී
-        primary = raw_lang.split(",")[0].strip()
-        return primary
+        return raw_lang.split(",")[0].strip()
 
     return "English"
 
@@ -105,10 +102,7 @@ async def fetch_imdb_data(filename: str):
         return None
 
     title, year = parse_movie_query(filename)
-    if year:
-        url = f"https://www.omdbapi.com/?t={title}&y={year}&apikey={OMDB_API_KEY}"
-    else:
-        url = f"https://www.omdbapi.com/?t={title}&apikey={OMDB_API_KEY}"
+    url = f"https://www.omdbapi.com/?t={title}&y={year}&apikey={OMDB_API_KEY}" if year else f"https://www.omdbapi.com/?t={title}&apikey={OMDB_API_KEY}"
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -116,18 +110,17 @@ async def fetch_imdb_data(filename: str):
                 data = await resp.json()
                 if data.get("Response") == "True":
                     return data
-                
                 fallback_url = f"https://www.omdbapi.com/?t={title}&apikey={OMDB_API_KEY}"
                 async with session.get(fallback_url) as fb_resp:
                     fb_data = await fb_resp.json()
                     if fb_data.get("Response") == "True":
                         return fb_data
     except Exception as e:
-        print(f"⚠️ OMDb Request Exception: {e}")
+        print(f"⚠️ OMDb Error: {e}")
     return None
 
 # =========================================================
-# 1. STREAMING & 2-STEP ADS DOWNLOAD WEB SERVER
+# 1. STREAMING & 2-STEP ADS DOWNLOAD
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -147,7 +140,6 @@ PLAYER_HTML = """
         <source src="/stream/{msg_id}" type="video/mp4">
         Browser does not support video playback.
     </video>
-
     {ad_script}
 </body>
 </html>
@@ -157,24 +149,17 @@ AD_SCRIPT_TEMPLATE = """
     <script>
         const AD_URL = "{ad_url}";
         let adOpened = false;
-
         function triggerSafeAd() {{
             if (!adOpened && AD_URL) {{
                 adOpened = true;
                 const win = window.open(AD_URL, '_blank');
-                if (win) {{
-                    win.focus();
-                }}
+                if (win) win.focus();
             }}
         }}
-
-        document.body.addEventListener('click', function() {{
-            triggerSafeAd();
-        }}, {{ once: true }});
+        document.body.addEventListener('click', function() {{ triggerSafeAd(); }}, {{ once: true }});
     </script>
 """
 
-# 2-STEP ADS DOWNLOAD HTML
 DOWNLOAD_HTML = """
 <!DOCTYPE html>
 <html>
@@ -190,7 +175,6 @@ DOWNLOAD_HTML = """
         .btn {{ display:block; width:100%; box-sizing:border-box; background:#2481cc; color:white; padding:15px; border-radius:12px; text-decoration:none; font-weight:bold; font-size:16px; margin-top:15px; cursor:pointer; border:none; transition:0.2s; }}
         .btn:hover {{ background:#1d6fa5; transform:scale(1.02); }}
         .btn-success {{ background:#2ea650; }}
-        .btn-success:hover {{ background:#278d44; }}
         .timer {{ font-size:20px; font-weight:bold; color:#64b5f6; margin:15px 0; }}
         .step-indicator {{ display:flex; justify-content:center; gap:8px; margin-bottom:20px; }}
         .dot {{ width:10px; height:10px; border-radius:50%; background:#334454; }}
@@ -203,31 +187,21 @@ DOWNLOAD_HTML = """
         <div class="badge">CINEX LK SECURE DOWNLOAD</div>
         <h2>🎬 Download Verification</h2>
         <p id="desc">File එක download කිරීමට පියවර 2 සම්පූර්ණ කරන්න.</p>
-
         <div class="step-indicator">
             <div class="dot active" id="dot1"></div>
             <div class="dot" id="dot2"></div>
             <div class="dot" id="dot3"></div>
         </div>
-
         <button id="step1Btn" class="btn" onclick="startStep1()">🔓 Step 1: Verify & Continue</button>
         <div class="timer" id="timerBox" style="display:none;">Wait <span id="seconds">5</span>s...</div>
         <button id="step2Btn" class="btn" onclick="startStep2()" style="display:none;">🔓 Step 2: Unlock Download</button>
         <a id="finalDlBtn" class="btn btn-success" href="/stream/{msg_id}" target="_blank" style="display:none;">📥 Download Movie Now</a>
     </div>
-
     <script>
         const AD1 = "{ad1}";
         const AD2 = "{ad2}";
         const STREAM_URL = "/stream/{msg_id}";
-
-        function openAd(url) {{
-            if (url) {{
-                const win = window.open(url, '_blank');
-                if (win) win.focus();
-            }}
-        }}
-
+        function openAd(url) {{ if (url) {{ const win = window.open(url, '_blank'); if (win) win.focus(); }} }}
         function startStep1() {{
             openAd(AD1);
             document.getElementById('step1Btn').style.display = 'none';
@@ -235,7 +209,6 @@ DOWNLOAD_HTML = """
             document.getElementById('desc').innerText = "පළමු පියවර සත්‍යාපනය වෙමින් පවතී...";
             document.getElementById('dot1').className = "dot done";
             document.getElementById('dot2').className = "dot active";
-
             let count = 5;
             const timer = setInterval(() => {{
                 count--;
@@ -248,7 +221,6 @@ DOWNLOAD_HTML = """
                 }}
             }}, 1000);
         }}
-
         function startStep2() {{
             openAd(AD2);
             document.getElementById('step2Btn').style.display = 'none';
@@ -257,7 +229,6 @@ DOWNLOAD_HTML = """
             document.getElementById('desc').innerText = "Download Link එක සූදානම් කරමින් පවතී...";
             document.getElementById('dot2').className = "dot done";
             document.getElementById('dot3').className = "dot active";
-
             let count = 3;
             const timer2 = setInterval(() => {{
                 count--;
@@ -267,7 +238,7 @@ DOWNLOAD_HTML = """
                     document.getElementById('timerBox').style.display = 'none';
                     document.getElementById('finalDlBtn').style.display = 'block';
                     document.getElementById('dot3').className = "dot done";
-                    document.getElementById('desc').innerText = "🎉 Download Link එක සූදානම්! පහත Button එක ඔබන්න.";
+                    document.getElementById('desc').innerText = "🎉 සූදානම්! පහත Button එක ඔබන්න.";
                     window.location.href = STREAM_URL;
                 }}
             }}, 1000);
@@ -288,11 +259,7 @@ async def watch_page(request):
 async def download_page(request):
     msg_id = request.match_info['msg_id']
     return web.Response(
-        text=DOWNLOAD_HTML.format(
-            msg_id=msg_id,
-            ad1=ADSTERRA_DIRECT_LINK,
-            ad2=MONETAG_STREAM_LINK or ADSTERRA_DIRECT_LINK
-        ),
+        text=DOWNLOAD_HTML.format(msg_id=msg_id, ad1=ADSTERRA_DIRECT_LINK, ad2=MONETAG_STREAM_LINK or ADSTERRA_DIRECT_LINK),
         content_type='text/html'
     )
 
@@ -316,7 +283,7 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-INDEX & AUTO-POST
+# 2. AUTO-POST TO MAIN & VIP CHANNELS
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -337,11 +304,7 @@ async def handle_storage_upload(client: Client, message: Message):
     try:
         await files_col.update_one(
             {"file_name": file_name},
-            {"$set": {
-                "file_name": file_name,
-                "file_size": media.file_size,
-                "message_id": msg_id
-            }},
+            {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id}},
             upsert=True
         )
     except Exception as db_err:
@@ -349,7 +312,7 @@ async def handle_storage_upload(client: Client, message: Message):
 
     imdb = await fetch_imdb_data(file_name)
 
-    # Buttons Setup
+    # 1. Main Channel Buttons
     main_watch_url = f"{BASE_URL}/watch/{msg_id}"
     main_dl_url = f"{BASE_URL}/download/{msg_id}"
     buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
@@ -357,14 +320,12 @@ async def handle_storage_upload(client: Client, message: Message):
 
     main_buttons = [
         [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
-        [
-            InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url),
-            InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)
-        ],
+        [InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url), InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)],
         [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)]
     ]
     main_markup = InlineKeyboardMarkup(main_buttons)
 
+    # 2. VIP Channel Buttons (Clean & Instant)
     vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
     vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
 
@@ -379,11 +340,7 @@ async def handle_storage_upload(client: Client, message: Message):
         title = f"{imdb.get('Title')} ({imdb.get('Year')})"
         rating = imdb.get('imdbRating', 'N/A')
         genre = imdb.get('Genre', 'N/A')
-        
-        # නිවැරදි ප්‍රධාන භාෂාව තෝරා ගැනීම (Single Primary Language)
-        raw_lang = imdb.get('Language', '')
-        language = get_clean_language(raw_lang, file_name)
-
+        language = get_clean_language(imdb.get('Language', ''), file_name)
         plot = imdb.get('Plot', 'No description available.')
         raw_poster = imdb.get("Poster")
 
@@ -406,7 +363,6 @@ async def handle_storage_upload(client: Client, message: Message):
             except Exception as dl_err:
                 print(f"⚠️ Poster download error: {dl_err}")
     else:
-        # IMDb නැති විට File name එකෙන් භාෂාව සොයා ගැනීම
         language = get_clean_language("", file_name)
         caption = (
             f"🎬 **{file_name}**\n\n"
@@ -441,7 +397,42 @@ async def handle_storage_upload(client: Client, message: Message):
                 print(f"❌ Text post also failed for {ch_name} ({ch}): {t_err}")
 
 # =========================================================
-# 3. BOT SEARCH & VIP DIRECT RETRIEVAL
+# 3. AUTO-KICK EXPIRED VIP USERS (30 DAYS CHECKER)
+# =========================================================
+async def vip_expiry_checker():
+    while True:
+        try:
+            now = datetime.utcnow()
+            # Find users whose expiry_date <= now
+            expired_users = await vip_users_col.find({"expiry_date": {"$lte": now}}).to_list(length=100)
+
+            for u in expired_users:
+                user_id = u["user_id"]
+                try:
+                    # Remove from VIP channel (ban & unban trick removes member)
+                    await app.ban_chat_member(VIP_CHANNEL, user_id)
+                    await app.unban_chat_member(VIP_CHANNEL, user_id)
+                    print(f"🔒 Removed expired VIP member: {user_id}")
+
+                    # Notify user
+                    await app.send_message(
+                        chat_id=user_id,
+                        text="⚠️ **ඔබගේ Cinex LK VIP සාමාජිකත්වය දින 30 අවසන් විය!**\nනැවත සම්බන්ධ වීමට /start ගොස් VIP Pass එක ලබාගන්න."
+                    )
+                except Exception as kick_err:
+                    print(f"⚠️ Failed to remove VIP member {user_id}: {kick_err}")
+
+                # Delete from DB
+                await vip_users_col.delete_one({"_id": u["_id"]})
+
+        except Exception as e:
+            print(f"⚠️ VIP Checker error: {e}")
+
+        # Check every 6 hours
+        await asyncio.sleep(6 * 3600)
+
+# =========================================================
+# 4. BOT COMMANDS & STARS PAYMENTS
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -452,9 +443,10 @@ async def handle_start(client: Client, message: Message):
 
         if param.startswith("vipfile_"):
             msg_id = int(param.split("_")[1])
-            await message.reply_text("👑 **VIP Download:** මෙන්න ඔබගේ Movie එක:")
+            await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
             await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
             return
+
         elif param.startswith("buy_"):
             msg_id = param.split("_")[1]
             await send_stars_invoice(
@@ -465,11 +457,12 @@ async def handle_start(client: Client, message: Message):
                 stars=5
             )
             return
+
         elif param == "vip":
             await send_stars_invoice(
                 chat_id=message.chat.id,
                 title="VIP Membership (30 Days)",
-                description="සියලුම Movies & Series දැන්වීම් නැතිව direct ලබාගන්න.",
+                description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
                 payload="vip_sub",
                 stars=150
             )
@@ -505,32 +498,17 @@ async def handle_search(client: Client, message: Message):
         watch_url = f"{BASE_URL}/watch/{msg_id}"
         dl_url = f"{BASE_URL}/download/{msg_id}"
 
-        caption = (
-            f"🎬 **{file['file_name']}**\n"
-            f"📦 **Size:** `{size_mb} MB`\n\n"
-            f"👇 **නැරඹීමට හෝ බාගත කිරීමට තෝරන්න:**"
-        )
-
+        caption = f"🎬 **{file['file_name']}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **නැරඹීමට හෝ බාගත කිරීමට තෝරන්න:**"
         buttons = [
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
-            [
-                InlineKeyboardButton("📥 Fast Download", url=dl_url),
-                InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{msg_id}")
-            ],
-            [InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}")],
+            [InlineKeyboardButton("📥 Fast Download", url=dl_url), InlineKeyboardButton("⚡ Direct File (5 ⭐️)", callback_data=f"buy_single_{msg_id}")],
             [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")]
         ]
         await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
 
-@app.on_callback_query(filters.regex(r"^getfile_"))
-async def send_free_file(client: Client, callback: CallbackQuery):
-    msg_id = int(callback.data.split("_")[1])
-    await callback.answer()
-    await client.copy_message(chat_id=callback.from_user.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
-
 @app.on_callback_query(filters.regex(r"^buy_single_"))
 async def pay_single(client: Client, callback: CallbackQuery):
-    msg_id = callback.data.split("_")[1]
+    msg_id = callback.data.split("_")[2]
     await callback.answer()
     await send_stars_invoice(
         chat_id=callback.from_user.id,
@@ -546,7 +524,7 @@ async def pay_vip(client: Client, callback: CallbackQuery):
     await send_stars_invoice(
         chat_id=callback.from_user.id,
         title="VIP Membership (30 Days)",
-        description="සියලුම Movies & Series දැන්වීම් නැතිව direct ලබාගන්න.",
+        description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
         payload="vip_sub",
         stars=150
     )
@@ -562,14 +540,35 @@ async def raw_update_handler(client: Client, update, users, chats):
 async def payment_success(client: Client, message: Message):
     payload = message.successful_payment.invoice_payload
 
+    # Single Movie File Purchase
     if payload.startswith("single_"):
         msg_id = int(payload.split("_")[1])
         await message.reply_text("🎉 **ගෙවීම සාර්ථකයි!** මෙන්න Movie එක:")
         await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
 
+    # 30-Day VIP Pass Purchase
     elif payload == "vip_sub":
-        invite = await client.create_chat_invite_link(chat_id=VIP_CHANNEL, member_limit=1)
-        await message.reply_text(f"👑 **VIP Access සක්‍රිය විය!**\n\nVIP Channel Link:\n{invite.invite_link}")
+        user_id = message.from_user.id
+        expiry_date = datetime.utcnow() + timedelta(days=30)
+
+        # 1. Save user to MongoDB with 30-day expiry
+        await vip_users_col.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+            upsert=True
+        )
+
+        # 2. Create a Single-Use Invite Link (only for this user)
+        try:
+            invite = await client.create_chat_invite_link(chat_id=VIP_CHANNEL, member_limit=1)
+            await message.reply_text(
+                f"🎉 **ගෙවීම සාර්ථකයි! ඔබගේ VIP සාමාජිකත්වය දින 30කට සක්‍රිය විය.**\n\n"
+                f"🔗 **ඔබගේ විශේෂ VIP Channel Link එක:**\n{invite.invite_link}\n\n"
+                f"*(මෙම Link එකෙන් සම්බන්ධ විය හැක්කේ ඔබට පමණි. දින 30 කින් සාමාජිකත්වය අවසන් වේ.)*"
+            )
+        except Exception as inv_err:
+            print(f"❌ Invite link creation error: {inv_err}")
+            await message.reply_text("VIP Access සක්‍රිය විය! කරුණාකර Admin අමතන්න.")
 
 # =========================================================
 # 5. SERVER STARTUP & KEEP-ALIVE
@@ -579,12 +578,8 @@ async def main():
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    if MAIN_CHANNEL:
-        try:
-            chat = await app.get_chat(MAIN_CHANNEL)
-            print(f"✅ Verified Access to Main Channel: {chat.title} ({MAIN_CHANNEL})")
-        except Exception as e:
-            print(f"❌ Main Channel check error: {e}")
+    # VIP Expiry Background Task එක Start කිරීම
+    asyncio.create_task(vip_expiry_checker())
 
     web_app = web.Application()
     web_app.add_routes(routes)
