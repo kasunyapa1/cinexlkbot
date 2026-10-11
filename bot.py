@@ -66,7 +66,7 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# HELPER FUNCTIONS (IMDb / OMDb)
+# HELPER FUNCTIONS (IMDb / OMDb & SMART LANGUAGE PARSER)
 # =========================================================
 def parse_movie_query(filename: str):
     name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
@@ -82,6 +82,23 @@ def parse_movie_query(filename: str):
         title = name.strip()
 
     return title, year
+
+# චිත්‍රපටයේ නිවැරදි ප්‍රධාන භාෂාව (Single Language) පමණක් වෙන් කර ගැනීම
+def get_clean_language(raw_lang: str, filename: str = "") -> str:
+    # 1. File Name එකේ පැහැදිලිව භාෂාවක් සඳහන්ව ඇත්නම් (උදා: Sinhala, Hindi, Tamil)
+    fn_lower = filename.lower()
+    common_langs = ["sinhala", "tamil", "hindi", "malayalam", "telugu", "korean", "japanese", "english", "chinese", "spanish", "french"]
+    for lang in common_langs:
+        if re.search(r"\b" + lang + r"\b", fn_lower):
+            return lang.capitalize()
+
+    # 2. OMDb එකෙන් එන භාෂාව පිරිසිදු කිරීම (පළමු ප්‍රධාන භාෂාව පමණක් තෝරා ගැනීම)
+    if raw_lang and raw_lang != "N/A":
+        # 'English, Japanese' ආවොත් පළමු එක 'English' ලෙස වෙන් කර ගනී
+        primary = raw_lang.split(",")[0].strip()
+        return primary
+
+    return "English"
 
 async def fetch_imdb_data(filename: str):
     if not OMDB_API_KEY:
@@ -174,7 +191,6 @@ DOWNLOAD_HTML = """
         .btn:hover {{ background:#1d6fa5; transform:scale(1.02); }}
         .btn-success {{ background:#2ea650; }}
         .btn-success:hover {{ background:#278d44; }}
-        .btn-disabled {{ background:#334454; color:#708499; cursor:not-allowed; }}
         .timer {{ font-size:20px; font-weight:bold; color:#64b5f6; margin:15px 0; }}
         .step-indicator {{ display:flex; justify-content:center; gap:8px; margin-bottom:20px; }}
         .dot {{ width:10px; height:10px; border-radius:50%; background:#334454; }}
@@ -194,16 +210,9 @@ DOWNLOAD_HTML = """
             <div class="dot" id="dot3"></div>
         </div>
 
-        <!-- Step 1 Button -->
         <button id="step1Btn" class="btn" onclick="startStep1()">🔓 Step 1: Verify & Continue</button>
-
-        <!-- Timer -->
         <div class="timer" id="timerBox" style="display:none;">Wait <span id="seconds">5</span>s...</div>
-
-        <!-- Step 2 Button -->
         <button id="step2Btn" class="btn" onclick="startStep2()" style="display:none;">🔓 Step 2: Unlock Download</button>
-
-        <!-- Final Download Button -->
         <a id="finalDlBtn" class="btn btn-success" href="/stream/{msg_id}" target="_blank" style="display:none;">📥 Download Movie Now</a>
     </div>
 
@@ -259,7 +268,6 @@ DOWNLOAD_HTML = """
                     document.getElementById('finalDlBtn').style.display = 'block';
                     document.getElementById('dot3').className = "dot done";
                     document.getElementById('desc').innerText = "🎉 Download Link එක සූදානම්! පහත Button එක ඔබන්න.";
-                    // Auto-trigger direct download
                     window.location.href = STREAM_URL;
                 }}
             }}, 1000);
@@ -371,7 +379,11 @@ async def handle_storage_upload(client: Client, message: Message):
         title = f"{imdb.get('Title')} ({imdb.get('Year')})"
         rating = imdb.get('imdbRating', 'N/A')
         genre = imdb.get('Genre', 'N/A')
-        language = imdb.get('Language', 'N/A')
+        
+        # නිවැරදි ප්‍රධාන භාෂාව තෝරා ගැනීම (Single Primary Language)
+        raw_lang = imdb.get('Language', '')
+        language = get_clean_language(raw_lang, file_name)
+
         plot = imdb.get('Plot', 'No description available.')
         raw_poster = imdb.get("Poster")
 
@@ -394,8 +406,11 @@ async def handle_storage_upload(client: Client, message: Message):
             except Exception as dl_err:
                 print(f"⚠️ Poster download error: {dl_err}")
     else:
+        # IMDb නැති විට File name එකෙන් භාෂාව සොයා ගැනීම
+        language = get_clean_language("", file_name)
         caption = (
             f"🎬 **{file_name}**\n\n"
+            f"🗣️ **Language:** `{language}`\n"
             f"📦 **Size:** `{size_mb} MB`\n\n"
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
