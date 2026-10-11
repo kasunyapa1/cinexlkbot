@@ -13,7 +13,6 @@ from pyrogram.types import (
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
-# Helper: Channel ID / Username Safe Parser
 def parse_chat_target(val: str):
     if not val:
         return 0
@@ -86,7 +85,6 @@ def parse_movie_query(filename: str):
 
 async def fetch_imdb_data(filename: str):
     if not OMDB_API_KEY:
-        print("⚠️ OMDB_API_KEY is not configured in Environment Variables.")
         return None
 
     title, year = parse_movie_query(filename)
@@ -107,13 +105,12 @@ async def fetch_imdb_data(filename: str):
                     fb_data = await fb_resp.json()
                     if fb_data.get("Response") == "True":
                         return fb_data
-                    print(f"⚠️ OMDb API error for '{title}': {fb_data.get('Error')}")
     except Exception as e:
         print(f"⚠️ OMDb Request Exception: {e}")
     return None
 
 # =========================================================
-# 1. STREAMING SERVER (ADS & VIP AD-FREE)
+# 1. STREAMING & 2-STEP ADS DOWNLOAD WEB SERVER
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -121,15 +118,15 @@ PLAYER_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Stream Player</title>
+    <title>Cinex LK Stream</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body {{ margin:0; background:#080b11; display:flex; justify-content:center; align-items:center; height:100vh; font-family:sans-serif; }}
+        body {{ margin:0; background:#080b11; display:flex; justify-content:center; align-items:center; height:100vh; font-family:sans-serif; color:white; }}
         video {{ width:95%; max-width:880px; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,0.8); }}
     </style>
 </head>
 <body>
-    <video id="moviePlayer" controls autoplay playsinline>
+    <video id="moviePlayer" controls autoplay playsinline preload="metadata">
         <source src="/stream/{msg_id}" type="video/mp4">
         Browser does not support video playback.
     </video>
@@ -142,39 +139,155 @@ PLAYER_HTML = """
 AD_SCRIPT_TEMPLATE = """
     <script>
         const AD_URL = "{ad_url}";
-        const video = document.getElementById('moviePlayer');
+        let adOpened = false;
 
-        let adTriggers = {{ start: false, p25: false, p50: false, p75: false }};
-
-        function triggerAd() {{
-            window.open(AD_URL, '_blank');
+        function triggerSafeAd() {{
+            if (!adOpened && AD_URL) {{
+                adOpened = true;
+                const win = window.open(AD_URL, '_blank');
+                if (win) {{
+                    win.focus();
+                }}
+            }}
         }}
 
-        document.addEventListener('click', function() {{
-            if (!adTriggers.start) {{
-                adTriggers.start = true;
-                triggerAd();
-            }}
+        document.body.addEventListener('click', function() {{
+            triggerSafeAd();
         }}, {{ once: true }});
-
-        video.addEventListener('timeupdate', function() {{
-            if (!video.duration) return;
-            const percent = (video.currentTime / video.duration) * 100;
-            if (percent >= 25 && !adTriggers.p25) {{ adTriggers.p25 = true; triggerAd(); }}
-            if (percent >= 50 && !adTriggers.p50) {{ adTriggers.p50 = true; triggerAd(); }}
-            if (percent >= 75 && !adTriggers.p75) {{ adTriggers.p75 = true; triggerAd(); }}
-        }});
     </script>
+"""
+
+# 2-STEP ADS DOWNLOAD HTML
+DOWNLOAD_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fast Download - Cinex LK</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{ margin:0; background:#0e1621; display:flex; flex-direction:column; justify-content:center; align-items:center; min-height:100vh; font-family:sans-serif; color:white; text-align:center; padding:20px; box-sizing:border-box; }}
+        .card {{ background:#17212b; padding:35px 25px; border-radius:18px; box-shadow:0 10px 35px rgba(0,0,0,0.6); max-width:420px; width:100%; border:1px solid #242f3d; }}
+        .badge {{ background:#2b5278; color:#64b5f6; font-size:12px; padding:6px 12px; border-radius:20px; font-weight:bold; letter-spacing:1px; display:inline-block; margin-bottom:15px; }}
+        h2 {{ margin:0 0 10px 0; font-size:22px; }}
+        p {{ color:#8a9aa8; font-size:14px; margin:0 0 20px 0; line-height:1.5; }}
+        .btn {{ display:block; width:100%; box-sizing:border-box; background:#2481cc; color:white; padding:15px; border-radius:12px; text-decoration:none; font-weight:bold; font-size:16px; margin-top:15px; cursor:pointer; border:none; transition:0.2s; }}
+        .btn:hover {{ background:#1d6fa5; transform:scale(1.02); }}
+        .btn-success {{ background:#2ea650; }}
+        .btn-success:hover {{ background:#278d44; }}
+        .btn-disabled {{ background:#334454; color:#708499; cursor:not-allowed; }}
+        .timer {{ font-size:20px; font-weight:bold; color:#64b5f6; margin:15px 0; }}
+        .step-indicator {{ display:flex; justify-content:center; gap:8px; margin-bottom:20px; }}
+        .dot {{ width:10px; height:10px; border-radius:50%; background:#334454; }}
+        .dot.active {{ background:#2481cc; }}
+        .dot.done {{ background:#2ea650; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="badge">CINEX LK SECURE DOWNLOAD</div>
+        <h2>🎬 Download Verification</h2>
+        <p id="desc">File එක download කිරීමට පියවර 2 සම්පූර්ණ කරන්න.</p>
+
+        <div class="step-indicator">
+            <div class="dot active" id="dot1"></div>
+            <div class="dot" id="dot2"></div>
+            <div class="dot" id="dot3"></div>
+        </div>
+
+        <!-- Step 1 Button -->
+        <button id="step1Btn" class="btn" onclick="startStep1()">🔓 Step 1: Verify & Continue</button>
+
+        <!-- Timer -->
+        <div class="timer" id="timerBox" style="display:none;">Wait <span id="seconds">5</span>s...</div>
+
+        <!-- Step 2 Button -->
+        <button id="step2Btn" class="btn" onclick="startStep2()" style="display:none;">🔓 Step 2: Unlock Download</button>
+
+        <!-- Final Download Button -->
+        <a id="finalDlBtn" class="btn btn-success" href="/stream/{msg_id}" target="_blank" style="display:none;">📥 Download Movie Now</a>
+    </div>
+
+    <script>
+        const AD1 = "{ad1}";
+        const AD2 = "{ad2}";
+        const STREAM_URL = "/stream/{msg_id}";
+
+        function openAd(url) {{
+            if (url) {{
+                const win = window.open(url, '_blank');
+                if (win) win.focus();
+            }}
+        }}
+
+        function startStep1() {{
+            openAd(AD1);
+            document.getElementById('step1Btn').style.display = 'none';
+            document.getElementById('timerBox').style.display = 'block';
+            document.getElementById('desc').innerText = "පළමු පියවර සත්‍යාපනය වෙමින් පවතී...";
+            document.getElementById('dot1').className = "dot done";
+            document.getElementById('dot2').className = "dot active";
+
+            let count = 5;
+            const timer = setInterval(() => {{
+                count--;
+                document.getElementById('seconds').innerText = count;
+                if (count <= 0) {{
+                    clearInterval(timer);
+                    document.getElementById('timerBox').style.display = 'none';
+                    document.getElementById('step2Btn').style.display = 'block';
+                    document.getElementById('desc').innerText = "දෙවන Ad එක Unlock කර Download ලබාගන්න.";
+                }}
+            }}, 1000);
+        }}
+
+        function startStep2() {{
+            openAd(AD2);
+            document.getElementById('step2Btn').style.display = 'none';
+            document.getElementById('timerBox').style.display = 'block';
+            document.getElementById('seconds').innerText = '3';
+            document.getElementById('desc').innerText = "Download Link එක සූදානම් කරමින් පවතී...";
+            document.getElementById('dot2').className = "dot done";
+            document.getElementById('dot3').className = "dot active";
+
+            let count = 3;
+            const timer2 = setInterval(() => {{
+                count--;
+                document.getElementById('seconds').innerText = count;
+                if (count <= 0) {{
+                    clearInterval(timer2);
+                    document.getElementById('timerBox').style.display = 'none';
+                    document.getElementById('finalDlBtn').style.display = 'block';
+                    document.getElementById('dot3').className = "dot done";
+                    document.getElementById('desc').innerText = "🎉 Download Link එක සූදානම්! පහත Button එක ඔබන්න.";
+                    // Auto-trigger direct download
+                    window.location.href = STREAM_URL;
+                }}
+            }}, 1000);
+        }}
+    </script>
+</body>
+</html>
 """
 
 @routes.get("/watch/{msg_id}")
 async def watch_page(request):
     msg_id = request.match_info['msg_id']
     is_vip = request.query.get("vip", "0") == "1"
-
     ad_script = "" if is_vip else AD_SCRIPT_TEMPLATE.format(ad_url=MONETAG_STREAM_LINK)
-    html_content = PLAYER_HTML.format(msg_id=msg_id, ad_script=ad_script)
-    return web.Response(text=html_content, content_type='text/html')
+    return web.Response(text=PLAYER_HTML.format(msg_id=msg_id, ad_script=ad_script), content_type='text/html')
+
+@routes.get("/download/{msg_id}")
+async def download_page(request):
+    msg_id = request.match_info['msg_id']
+    # Step 1: Adsterra | Step 2: Monetag
+    return web.Response(
+        text=DOWNLOAD_HTML.format(
+            msg_id=msg_id,
+            ad1=ADSTERRA_DIRECT_LINK,
+            ad2=MONETAG_STREAM_LINK or ADSTERRA_DIRECT_LINK
+        ),
+        content_type='text/html'
+    )
 
 @routes.get("/stream/{msg_id}")
 async def stream_media(request):
@@ -186,6 +299,7 @@ async def stream_media(request):
         headers={
             'Content-Type': media.mime_type or 'video/mp4',
             'Content-Length': str(media.file_size),
+            'Content-Disposition': f'attachment; filename="{media.file_name or "movie.mp4"}"',
             'Accept-Ranges': 'bytes'
         }
     )
@@ -195,7 +309,7 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-INDEX & AUTO-POST (MAIN & VIP CHANNELS)
+# 2. AUTO-INDEX & AUTO-POST
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -213,7 +327,6 @@ async def handle_storage_upload(client: Client, message: Message):
 
     print(f"\n📥 [Storage Channel] New File Uploaded: {file_name} (Msg ID: {msg_id})")
 
-    # 1. MongoDB Save
     try:
         await files_col.update_one(
             {"file_name": file_name},
@@ -224,30 +337,27 @@ async def handle_storage_upload(client: Client, message: Message):
             }},
             upsert=True
         )
-        print(f"✅ DB Updated for: {file_name}")
     except Exception as db_err:
         print(f"❌ DB Error: {db_err}")
 
-    # 2. OMDb / IMDb Metadata
     imdb = await fetch_imdb_data(file_name)
 
-    # ------------------ BUTTONS CONFIGURATION ------------------
-    # 1. Main Channel Buttons (With Ads & Paid Options)
+    # Buttons Setup
     main_watch_url = f"{BASE_URL}/watch/{msg_id}"
+    main_dl_url = f"{BASE_URL}/download/{msg_id}"
     buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
     vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
     main_buttons = [
         [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
         [
-            InlineKeyboardButton("📥 Fast Download", url=ADSTERRA_DIRECT_LINK),
+            InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url),
             InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)
         ],
         [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)]
     ]
     main_markup = InlineKeyboardMarkup(main_buttons)
 
-    # 2. VIP Channel Buttons (100% Ad-Free, Direct File & Ad-Free Player)
     vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
     vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
 
@@ -256,7 +366,6 @@ async def handle_storage_upload(client: Client, message: Message):
         [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_file_url)]
     ]
     vip_markup = InlineKeyboardMarkup(vip_buttons)
-    # -----------------------------------------------------------
 
     poster_bytes = None
     if imdb and imdb.get("Response") == "True":
@@ -281,7 +390,6 @@ async def handle_storage_upload(client: Client, message: Message):
                     async with session.get(raw_poster) as img_resp:
                         if img_resp.status == 200:
                             poster_bytes = await img_resp.read()
-                            print("🖼️ Poster successfully downloaded from IMDb.")
             except Exception as dl_err:
                 print(f"⚠️ Poster download error: {dl_err}")
     else:
@@ -291,7 +399,6 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
-    # Target Channels with their respective markup
     targets = []
     if MAIN_CHANNEL:
         targets.append((MAIN_CHANNEL, main_markup, "Main"))
@@ -304,12 +411,7 @@ async def handle_storage_upload(client: Client, message: Message):
             try:
                 photo_file = io.BytesIO(poster_bytes)
                 photo_file.name = "poster.jpg"
-                await client.send_photo(
-                    chat_id=ch,
-                    photo=photo_file,
-                    caption=caption,
-                    reply_markup=markup
-                )
+                await client.send_photo(chat_id=ch, photo=photo_file, caption=caption, reply_markup=markup)
                 print(f"🚀 Photo Post published to {ch_name} Channel: {ch}")
                 posted = True
             except Exception as p_err:
@@ -317,11 +419,7 @@ async def handle_storage_upload(client: Client, message: Message):
 
         if not posted:
             try:
-                await client.send_message(
-                    chat_id=ch,
-                    text=caption,
-                    reply_markup=markup
-                )
+                await client.send_message(chat_id=ch, text=caption, reply_markup=markup)
                 print(f"🚀 Text Post published to {ch_name} Channel: {ch}")
             except Exception as t_err:
                 print(f"❌ Text post also failed for {ch_name} ({ch}): {t_err}")
@@ -336,14 +434,11 @@ async def handle_start(client: Client, message: Message):
     if len(text.split()) > 1:
         param = text.split()[1]
 
-        # VIP Members: Instant Direct File without Stars/Ads
         if param.startswith("vipfile_"):
             msg_id = int(param.split("_")[1])
             await message.reply_text("👑 **VIP Download:** මෙන්න ඔබගේ Movie එක:")
             await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
             return
-
-        # Regular Members: Pay 5 Stars
         elif param.startswith("buy_"):
             msg_id = param.split("_")[1]
             await send_stars_invoice(
@@ -354,8 +449,6 @@ async def handle_start(client: Client, message: Message):
                 stars=5
             )
             return
-
-        # Buy VIP Pass (150 Stars)
         elif param == "vip":
             await send_stars_invoice(
                 chat_id=message.chat.id,
@@ -394,6 +487,7 @@ async def handle_search(client: Client, message: Message):
         size_mb = round(file["file_size"] / (1024 * 1024), 2)
         msg_id = file["message_id"]
         watch_url = f"{BASE_URL}/watch/{msg_id}"
+        dl_url = f"{BASE_URL}/download/{msg_id}"
 
         caption = (
             f"🎬 **{file['file_name']}**\n"
@@ -404,7 +498,7 @@ async def handle_search(client: Client, message: Message):
         buttons = [
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
             [
-                InlineKeyboardButton("📥 Download (Adsterra)", url=ADSTERRA_DIRECT_LINK),
+                InlineKeyboardButton("📥 Fast Download", url=dl_url),
                 InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{msg_id}")
             ],
             [InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}")],
@@ -416,15 +510,7 @@ async def handle_search(client: Client, message: Message):
 async def send_free_file(client: Client, callback: CallbackQuery):
     msg_id = int(callback.data.split("_")[1])
     await callback.answer()
-    await client.copy_message(
-        chat_id=callback.from_user.id,
-        from_chat_id=STORAGE_CHANNEL,
-        message_id=msg_id
-    )
-
-# =========================================================
-# 4. TELEGRAM STARS PAYMENTS
-# =========================================================
+    await client.copy_message(chat_id=callback.from_user.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
 
 @app.on_callback_query(filters.regex(r"^buy_single_"))
 async def pay_single(client: Client, callback: CallbackQuery):
