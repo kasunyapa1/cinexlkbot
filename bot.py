@@ -1,5 +1,6 @@
 import os
 import re
+import aiohttp
 from pyrogram import Client, filters
 from pyrogram.types import (
     InlineKeyboardMarkup,
@@ -7,8 +8,6 @@ from pyrogram.types import (
     Message,
     CallbackQuery
 )
-from pyrogram.raw.types import InputStorePaymentPurposeStars, LabeledPrice
-from pyrogram.raw.functions.payments import SendPaymentForm, GetPaymentForm
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -28,6 +27,21 @@ PORT = int(os.environ.get("PORT", "8080"))
 app = Client("all_in_one_movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
+
+# Telegram Bot API Helper for Stars Invoices
+async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+    data = {
+        "chat_id": chat_id,
+        "title": title,
+        "description": description,
+        "payload": payload,
+        "currency": "XTR",
+        "prices": [{"label": title, "amount": stars}]
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=data) as resp:
+            return await resp.json()
 
 # =========================================================
 # 1. STREAMING SERVER + MONETAG 4-MILESTONE ADS
@@ -178,37 +192,39 @@ async def send_free_file(client: Client, callback: CallbackQuery):
     )
 
 # =========================================================
-# 3. TELEGRAM STARS PAYMENTS & INVOICES
+# 3. TELEGRAM STARS PAYMENTS
 # =========================================================
 
 @app.on_callback_query(filters.regex(r"^buy_single_"))
 async def pay_single(client: Client, callback: CallbackQuery):
     msg_id = callback.data.split("_")[1]
     await callback.answer()
-    await client.send_invoice(
+    await send_stars_invoice(
         chat_id=callback.from_user.id,
         title="Direct Movie File",
         description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
         payload=f"single_{msg_id}",
-        currency="XTR",
-        prices=[{"label": "Instant Download", "amount": 5}]
+        stars=5
     )
 
 @app.on_callback_query(filters.regex(r"^buy_vip_pass$"))
 async def pay_vip(client: Client, callback: CallbackQuery):
     await callback.answer()
-    await client.send_invoice(
+    await send_stars_invoice(
         chat_id=callback.from_user.id,
         title="VIP Membership (30 Days)",
         description="සියලුම Movies & Series දැන්වීම් නැතිව direct ලබාගන්න.",
         payload="vip_sub",
-        currency="XTR",
-        prices=[{"label": "VIP Access", "amount": 150}]
+        stars=150
     )
 
-@app.on_pre_checkout_query()
-async def process_checkout(client: Client, query):
-    await query.answer(ok=True)
+@app.on_raw_update()
+async def raw_update_handler(client: Client, update, users, chats):
+    # Auto-answer pre-checkout query via HTTP API
+    if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
+        async with aiohttp.ClientSession() as session:
+            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
 
 @app.on_message(filters.successful_payment)
 async def payment_success(client: Client, message: Message):
@@ -224,7 +240,7 @@ async def payment_success(client: Client, message: Message):
         await message.reply_text(f"👑 **VIP Access සක්‍රිය විය!**\n\nVIP Channel Link:\n{invite.invite_link}")
 
 # =========================================================
-# 4. STARTUP ENGINE
+# 4. SERVER STARTUP
 # =========================================================
 async def start_services():
     await app.start()
