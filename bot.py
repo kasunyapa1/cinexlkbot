@@ -35,7 +35,7 @@ MONGO_URI = os.environ.get("MONGO_URI", "")
 
 STORAGE_CHANNEL = parse_chat_target(os.environ.get("STORAGE_CHANNEL", "0"))
 VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "0"))
-MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "0"))
+MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
@@ -191,8 +191,13 @@ async def stream_media(request):
 # 2. AUTO-INDEX & AUTO-POST (STORAGE -> CHANNELS)
 # =========================================================
 
-@app.on_message(filters.chat(STORAGE_CHANNEL) & (filters.document | filters.video))
+# Any media incoming from channels
+@app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
 async def handle_storage_upload(client: Client, message: Message):
+    # Ensure it comes from the STORAGE_CHANNEL
+    if message.chat.id != STORAGE_CHANNEL:
+        return
+
     media = message.document or message.video
     if not media:
         return
@@ -201,8 +206,9 @@ async def handle_storage_upload(client: Client, message: Message):
     size_mb = round(media.file_size / (1024 * 1024), 2)
     msg_id = message.id
 
-    print(f"\n📥 [Storage Channel] New File: {file_name} (Msg ID: {msg_id})")
+    print(f"\n📥 [Storage Channel] New File Uploaded: {file_name} (Msg ID: {msg_id})")
 
+    # 1. MongoDB Save
     try:
         await files_col.update_one(
             {"file_name": file_name},
@@ -217,6 +223,7 @@ async def handle_storage_upload(client: Client, message: Message):
     except Exception as db_err:
         print(f"❌ DB Error: {db_err}")
 
+    # 2. OMDb / IMDb Metadata
     imdb = await fetch_imdb_data(file_name)
 
     watch_url = f"{BASE_URL}/watch/{msg_id}"
@@ -266,6 +273,7 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
+    # Post to MAIN_CHANNEL (@cinexlk)
     target_channels = [ch for ch in [MAIN_CHANNEL, VIP_CHANNEL] if ch]
 
     for ch in target_channels:
@@ -280,7 +288,7 @@ async def handle_storage_upload(client: Client, message: Message):
                     caption=caption,
                     reply_markup=reply_markup
                 )
-                print(f"🚀 Photo Post published to: {ch}")
+                print(f"🚀 Photo Post successfully published to: {ch}")
                 posted = True
             except Exception as p_err:
                 print(f"⚠️ Photo Post failed for {ch}: {p_err}. Trying text fallback...")
@@ -292,7 +300,7 @@ async def handle_storage_upload(client: Client, message: Message):
                     text=caption,
                     reply_markup=reply_markup
                 )
-                print(f"🚀 Text Post published to: {ch}")
+                print(f"🚀 Text Post successfully published to: {ch}")
             except Exception as t_err:
                 print(f"❌ Text post also failed for {ch}: {t_err}")
 
@@ -436,13 +444,13 @@ async def main():
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    for name, ch in [("Storage", STORAGE_CHANNEL), ("Main", MAIN_CHANNEL), ("VIP", VIP_CHANNEL)]:
-        if ch:
-            try:
-                chat = await app.get_chat(ch)
-                print(f"✅ Verified Access to {name} Channel: {chat.title} ({ch})")
-            except Exception as e:
-                print(f"❌ Cannot access {name} Channel ({ch}): {e}")
+    # Check Main Channel
+    if MAIN_CHANNEL:
+        try:
+            chat = await app.get_chat(MAIN_CHANNEL)
+            print(f"✅ Verified Access to Main Channel: {chat.title} ({MAIN_CHANNEL})")
+        except Exception as e:
+            print(f"❌ Main Channel check error: {e}")
 
     web_app = web.Application()
     web_app.add_routes(routes)
