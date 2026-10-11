@@ -146,7 +146,7 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-INDEX & AUTO-POST TO MAIN CHANNEL (CINEX LK)
+# 2. AUTO-INDEX & AUTO-POST TO CHANNELS (MAIN & VIP)
 # =========================================================
 
 @app.on_message(filters.chat(STORAGE_CHANNEL) & (filters.document | filters.video))
@@ -166,57 +166,75 @@ async def handle_storage_upload(client: Client, message: Message):
         }},
         upsert=True
     )
+    print(f" Saved to DB: {file_name}")
 
-    # 2. Cinex LK Main Channel එකට Auto Post කිරීම
-    if MAIN_CHANNEL:
-        clean_name = clean_movie_name(file_name)
-        imdb = await fetch_imdb_data(clean_name)
+    # 2. Movie Name එක Clean කර IMDb / OMDb දත්ත ලබාගැනීම
+    clean_name = clean_movie_name(file_name)
+    imdb = await fetch_imdb_data(clean_name)
 
-        watch_url = f"{BASE_URL}/watch/{msg_id}"
-        buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
-        vip_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+    watch_url = f"{BASE_URL}/watch/{msg_id}"
+    buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
+    vip_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
-        buttons = [
-            [InlineKeyboardButton("🌐 Watch Online", url=watch_url)],
-            [
-                InlineKeyboardButton("📥 Fast Download", url=ADSTERRA_DIRECT_LINK),
-                InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)
-            ],
-            [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_url)]
-        ]
-        reply_markup = InlineKeyboardMarkup(buttons)
+    buttons = [
+        [InlineKeyboardButton("🌐 Watch Online", url=watch_url)],
+        [
+            InlineKeyboardButton("📥 Fast Download", url=ADSTERRA_DIRECT_LINK),
+            InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)
+        ],
+        [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_url)]
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
 
-        if imdb and imdb.get("Poster") and imdb.get("Poster") != "N/A":
-            caption = (
-                f"🎬 **{imdb.get('Title')} ({imdb.get('Year')})**\n\n"
-                f"⭐ **IMDb Rating:** `{imdb.get('imdbRating')}/10`\n"
-                f"🎭 **Genre:** `{imdb.get('Genre')}`\n"
-                f"📦 **Size:** `{size_mb} MB`\n\n"
-                f"📖 **Plot:** {imdb.get('Plot')[:250]}...\n\n"
-                f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
-            )
-            try:
-                await client.send_photo(
-                    chat_id=MAIN_CHANNEL,
-                    photo=imdb.get("Poster"),
-                    caption=caption,
-                    reply_markup=reply_markup
-                )
-                return
-            except Exception:
-                pass
-
-        # Poster එකක් නොලැබුණහොත් Text Post එකක් යවයි
+    # Caption සකස් කිරීම
+    if imdb and imdb.get("Response") == "True":
+        title = f"{imdb.get('Title')} ({imdb.get('Year')})"
+        rating = imdb.get('imdbRating', 'N/A')
+        genre = imdb.get('Genre', 'N/A')
+        plot = imdb.get('Plot', 'No description available.')
+        poster_url = imdb.get("Poster") if imdb.get("Poster") != "N/A" else None
+        
+        caption = (
+            f"🎬 **{title}**\n\n"
+            f"⭐ **IMDb Rating:** `{rating}/10`\n"
+            f"🎭 **Genre:** `{genre}`\n"
+            f"📦 **Size:** `{size_mb} MB`\n\n"
+            f"📖 **Story:** {plot[:250]}...\n\n"
+            f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
+        )
+    else:
+        poster_url = None
         caption = (
             f"🎬 **{file_name}**\n\n"
             f"📦 **Size:** `{size_mb} MB`\n\n"
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
-        await client.send_message(
-            chat_id=MAIN_CHANNEL,
-            text=caption,
-            reply_markup=reply_markup
-        )
+
+    # Post කළ යුතු Channels ලැයිස්තුව (Main Channel සහ VIP Channel)
+    target_channels = []
+    if MAIN_CHANNEL:
+        target_channels.append(MAIN_CHANNEL)
+    if VIP_CHANNEL:
+        target_channels.append(VIP_CHANNEL)
+
+    for ch_id in target_channels:
+        try:
+            if poster_url:
+                await client.send_photo(
+                    chat_id=ch_id,
+                    photo=poster_url,
+                    caption=caption,
+                    reply_markup=reply_markup
+                )
+            else:
+                await client.send_message(
+                    chat_id=ch_id,
+                    text=caption,
+                    reply_markup=reply_markup
+                )
+            print(f" Successfully posted to channel {ch_id}")
+        except Exception as e:
+            print(f" Failed to post to channel {ch_id}: {e}")
 
 # =========================================================
 # 3. BOT SEARCH & DEEP-LINK HANDLER (/start buy_123)
