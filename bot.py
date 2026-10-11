@@ -279,7 +279,6 @@ async def watch_page(request):
 @routes.get("/download/{msg_id}")
 async def download_page(request):
     msg_id = request.match_info['msg_id']
-    # Step 1: Adsterra | Step 2: Monetag
     return web.Response(
         text=DOWNLOAD_HTML.format(
             msg_id=msg_id,
@@ -372,6 +371,7 @@ async def handle_storage_upload(client: Client, message: Message):
         title = f"{imdb.get('Title')} ({imdb.get('Year')})"
         rating = imdb.get('imdbRating', 'N/A')
         genre = imdb.get('Genre', 'N/A')
+        language = imdb.get('Language', 'N/A')
         plot = imdb.get('Plot', 'No description available.')
         raw_poster = imdb.get("Poster")
 
@@ -379,6 +379,7 @@ async def handle_storage_upload(client: Client, message: Message):
             f"🎬 **{title}**\n\n"
             f"⭐ **IMDb Rating:** `{rating}/10`\n"
             f"🎭 **Genre:** `{genre}`\n"
+            f"🗣️ **Language:** `{language}`\n"
             f"📦 **Size:** `{size_mb} MB`\n\n"
             f"📖 **Story:** {plot[:250]}...\n\n"
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
