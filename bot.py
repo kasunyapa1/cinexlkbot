@@ -341,16 +341,26 @@ async def payment_success(client: Client, message: Message):
 # =========================================================
 # 5. SERVER STARTUP & KEEP-ALIVE
 # =========================================================
+from pyrogram import idle
+
 async def main():
+    # 1. Telegram Bot එක Start කිරීම
     await app.start()
+    me = await app.get_me()
+    print(f"🤖 Bot Started Successfully as @{me.username}")
+
+    # 2. Web Streaming Server එක Start කිරීම
     web_app = web.Application()
     web_app.add_routes(routes)
     runner = web.AppRunner(web_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"Server started on port {PORT}")
-    await asyncio.Event().wait()
+    print(f"🌐 Web Server live on port {PORT}")
+
+    # 3. Bot එක Telegram updates වලට සවන් දීමට (Idle) තැබීම
+    await idle()
+    await app.stop()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.run(main())
