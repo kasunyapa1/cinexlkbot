@@ -113,7 +113,7 @@ async def fetch_imdb_data(filename: str):
     return None
 
 # =========================================================
-# 1. STREAMING SERVER + MONETAG ADS
+# 1. STREAMING SERVER (ADS & VIP AD-FREE)
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -134,6 +134,12 @@ PLAYER_HTML = """
         Browser does not support video playback.
     </video>
 
+    {ad_script}
+</body>
+</html>
+"""
+
+AD_SCRIPT_TEMPLATE = """
     <script>
         const AD_URL = "{ad_url}";
         const video = document.getElementById('moviePlayer');
@@ -159,14 +165,15 @@ PLAYER_HTML = """
             if (percent >= 75 && !adTriggers.p75) {{ adTriggers.p75 = true; triggerAd(); }}
         }});
     </script>
-</body>
-</html>
 """
 
 @routes.get("/watch/{msg_id}")
 async def watch_page(request):
     msg_id = request.match_info['msg_id']
-    html_content = PLAYER_HTML.format(msg_id=msg_id, ad_url=MONETAG_STREAM_LINK)
+    is_vip = request.query.get("vip", "0") == "1"
+
+    ad_script = "" if is_vip else AD_SCRIPT_TEMPLATE.format(ad_url=MONETAG_STREAM_LINK)
+    html_content = PLAYER_HTML.format(msg_id=msg_id, ad_script=ad_script)
     return web.Response(text=html_content, content_type='text/html')
 
 @routes.get("/stream/{msg_id}")
@@ -188,13 +195,11 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-INDEX & AUTO-POST (STORAGE -> CHANNELS)
+# 2. AUTO-INDEX & AUTO-POST (MAIN & VIP CHANNELS)
 # =========================================================
 
-# Any media incoming from channels
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
 async def handle_storage_upload(client: Client, message: Message):
-    # Ensure it comes from the STORAGE_CHANNEL
     if message.chat.id != STORAGE_CHANNEL:
         return
 
@@ -226,19 +231,32 @@ async def handle_storage_upload(client: Client, message: Message):
     # 2. OMDb / IMDb Metadata
     imdb = await fetch_imdb_data(file_name)
 
-    watch_url = f"{BASE_URL}/watch/{msg_id}"
+    # ------------------ BUTTONS CONFIGURATION ------------------
+    # 1. Main Channel Buttons (With Ads & Paid Options)
+    main_watch_url = f"{BASE_URL}/watch/{msg_id}"
     buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
-    vip_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+    vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
-    buttons = [
-        [InlineKeyboardButton("🌐 Watch Online", url=watch_url)],
+    main_buttons = [
+        [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
         [
             InlineKeyboardButton("📥 Fast Download", url=ADSTERRA_DIRECT_LINK),
             InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)
         ],
-        [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_url)]
+        [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)]
     ]
-    reply_markup = InlineKeyboardMarkup(buttons)
+    main_markup = InlineKeyboardMarkup(main_buttons)
+
+    # 2. VIP Channel Buttons (100% Ad-Free, Direct File & Ad-Free Player)
+    vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
+    vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
+
+    vip_buttons = [
+        [InlineKeyboardButton("🌐 Watch Online (No Ads)", url=vip_watch_url)],
+        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_file_url)]
+    ]
+    vip_markup = InlineKeyboardMarkup(vip_buttons)
+    # -----------------------------------------------------------
 
     poster_bytes = None
     if imdb and imdb.get("Response") == "True":
@@ -273,10 +291,14 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
-    # Post to MAIN_CHANNEL (@cinexlk)
-    target_channels = [ch for ch in [MAIN_CHANNEL, VIP_CHANNEL] if ch]
+    # Target Channels with their respective markup
+    targets = []
+    if MAIN_CHANNEL:
+        targets.append((MAIN_CHANNEL, main_markup, "Main"))
+    if VIP_CHANNEL:
+        targets.append((VIP_CHANNEL, vip_markup, "VIP"))
 
-    for ch in target_channels:
+    for ch, markup, ch_name in targets:
         posted = False
         if poster_bytes:
             try:
@@ -286,26 +308,26 @@ async def handle_storage_upload(client: Client, message: Message):
                     chat_id=ch,
                     photo=photo_file,
                     caption=caption,
-                    reply_markup=reply_markup
+                    reply_markup=markup
                 )
-                print(f"🚀 Photo Post successfully published to: {ch}")
+                print(f"🚀 Photo Post published to {ch_name} Channel: {ch}")
                 posted = True
             except Exception as p_err:
-                print(f"⚠️ Photo Post failed for {ch}: {p_err}. Trying text fallback...")
+                print(f"⚠️ Photo Post failed for {ch_name} ({ch}): {p_err}. Trying text fallback...")
 
         if not posted:
             try:
                 await client.send_message(
                     chat_id=ch,
                     text=caption,
-                    reply_markup=reply_markup
+                    reply_markup=markup
                 )
-                print(f"🚀 Text Post successfully published to: {ch}")
+                print(f"🚀 Text Post published to {ch_name} Channel: {ch}")
             except Exception as t_err:
-                print(f"❌ Text post also failed for {ch}: {t_err}")
+                print(f"❌ Text post also failed for {ch_name} ({ch}): {t_err}")
 
 # =========================================================
-# 3. BOT SEARCH (NO DUPLICATES)
+# 3. BOT SEARCH & VIP DIRECT RETRIEVAL
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -313,7 +335,16 @@ async def handle_start(client: Client, message: Message):
     text = message.text
     if len(text.split()) > 1:
         param = text.split()[1]
-        if param.startswith("buy_"):
+
+        # VIP Members: Instant Direct File without Stars/Ads
+        if param.startswith("vipfile_"):
+            msg_id = int(param.split("_")[1])
+            await message.reply_text("👑 **VIP Download:** මෙන්න ඔබගේ Movie එක:")
+            await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+            return
+
+        # Regular Members: Pay 5 Stars
+        elif param.startswith("buy_"):
             msg_id = param.split("_")[1]
             await send_stars_invoice(
                 chat_id=message.chat.id,
@@ -323,6 +354,8 @@ async def handle_start(client: Client, message: Message):
                 stars=5
             )
             return
+
+        # Buy VIP Pass (150 Stars)
         elif param == "vip":
             await send_stars_invoice(
                 chat_id=message.chat.id,
@@ -444,7 +477,6 @@ async def main():
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    # Check Main Channel
     if MAIN_CHANNEL:
         try:
             chat = await app.get_chat(MAIN_CHANNEL)
