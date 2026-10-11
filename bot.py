@@ -52,18 +52,18 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# HELPER FUNCTIONS (IMDb / OMDb)
+# HELPER FUNCTIONS
 # =========================================================
 def clean_movie_name(filename: str):
     name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
     name = re.sub(r"\[.*?\]|\(.*?\)", "", name)
-    name = re.sub(r"(1080p|720p|480p|BluRay|WEB-DL|HDRip|x264|x265|HEVC|AAC)", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"(1080p|720p|480p|2160p|4k|BluRay|WEB-DL|HDRip|x264|x265|HEVC|AAC|DDP|ESub)", "", name, flags=re.IGNORECASE)
     name = name.replace(".", " ").replace("_", " ").strip()
     return name
 
 async def fetch_imdb_data(query: str):
     if not OMDB_API_KEY:
-        print("⚠️ OMDB_API_KEY is missing in Environment Variables!")
+        print("⚠️ OMDB_API_KEY is not configured in Environment Variables.")
         return None
     url = f"https://www.omdbapi.com/?t={query}&apikey={OMDB_API_KEY}"
     try:
@@ -154,24 +154,26 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-INDEX & AUTO-POST TO CHANNELS (MAIN & VIP)
+# 2. AUTO-INDEX & AUTO-POST (STORAGE -> CHANNELS)
 # =========================================================
 
-@app.on_message((filters.document | filters.video))
+# Storage Channel එකේ files පමණක් අල්ලා ගැනීම
+@app.on_message(filters.chat(STORAGE_CHANNEL) & (filters.document | filters.video))
 async def handle_storage_upload(client: Client, message: Message):
-    if message.chat.id != STORAGE_CHANNEL:
+    media = message.document or message.video
+    if not media:
         return
 
-    media = message.document or message.video
     file_name = media.file_name or "Unknown Movie"
     size_mb = round(media.file_size / (1024 * 1024), 2)
     msg_id = message.id
 
-    print(f"📥 New File Detected in Storage Channel: {file_name} (Msg ID: {msg_id})")
+    print(f"\n📥 [Storage Channel] New File: {file_name} (Msg ID: {msg_id})")
 
+    # 1. MongoDB එකට Unique ලෙස Save කිරීම (Duplicate නොවීමට file_name අනුව update)
     try:
         await files_col.update_one(
-            {"file_id": media.file_id},
+            {"file_name": file_name},
             {"$set": {
                 "file_name": file_name,
                 "file_size": media.file_size,
@@ -179,10 +181,11 @@ async def handle_storage_upload(client: Client, message: Message):
             }},
             upsert=True
         )
-        print(f"✅ Saved to DB: {file_name}")
+        print(f"✅ DB Updated successfully for: {file_name}")
     except Exception as db_err:
         print(f"❌ DB Error: {db_err}")
 
+    # 2. IMDb / OMDb විස්තර සහ Poster ලබාගැනීම
     clean_name = clean_movie_name(file_name)
     print(f"🔍 Searching IMDb for: '{clean_name}'")
     imdb = await fetch_imdb_data(clean_name)
@@ -201,6 +204,7 @@ async def handle_storage_upload(client: Client, message: Message):
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
 
+    # Caption සකස් කිරීම
     if imdb and imdb.get("Response") == "True":
         title = f"{imdb.get('Title')} ({imdb.get('Year')})"
         rating = imdb.get('imdbRating', 'N/A')
@@ -224,6 +228,7 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
+    # Post කළ යුතු Channels
     target_channels = []
     if MAIN_CHANNEL:
         target_channels.append(MAIN_CHANNEL)
@@ -248,9 +253,19 @@ async def handle_storage_upload(client: Client, message: Message):
             print(f"🚀 Successfully posted to channel: {ch_id}")
         except Exception as e:
             print(f"❌ Failed to post to channel {ch_id}: {e}")
+            # Photo එක fail වුණොත් Text post එකක් හෝ යැවීම
+            try:
+                await client.send_message(
+                    chat_id=ch_id,
+                    text=caption,
+                    reply_markup=reply_markup
+                )
+                print(f"⚠️ Sent fallback text post to channel: {ch_id}")
+            except Exception as e2:
+                print(f"❌ Fallback text post also failed: {e2}")
 
 # =========================================================
-# 3. BOT SEARCH & DEEP-LINK HANDLER (/start buy_123)
+# 3. BOT SEARCH (DUPLICATES REMOVED)
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -284,13 +299,27 @@ async def handle_start(client: Client, message: Message):
 async def handle_search(client: Client, message: Message):
     query = message.text.strip()
     regex = {"file_name": {"$regex": re.escape(query), "$options": "i"}}
-    results = await files_col.find(regex).limit(5).to_list(length=5)
+    
+    # Unique results පමණක් තෝරා ගැනීම (Duplicate menus නැවැත්වීමට)
+    cursor = files_col.find(regex).limit(10)
+    raw_results = await cursor.to_list(length=10)
 
-    if not results:
+    if not raw_results:
         await message.reply_text("❌ Movie එක හමු නොවීය. නම නිවැරදිව type කරන්න.")
         return
 
-    for file in results:
+    # Distinct file names filter කිරීම
+    seen_names = set()
+    unique_results = []
+    for f in raw_results:
+        name = f.get("file_name", "")
+        if name not in seen_names:
+            seen_names.add(name)
+            unique_results.append(f)
+        if len(unique_results) >= 3:
+            break
+
+    for file in unique_results:
         size_mb = round(file["file_size"] / (1024 * 1024), 2)
         msg_id = file["message_id"]
         watch_url = f"{BASE_URL}/watch/{msg_id}"
