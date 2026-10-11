@@ -9,8 +9,10 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery
+    CallbackQuery,
+    ChatJoinRequest
 )
+from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -36,6 +38,7 @@ MONGO_URI = os.environ.get("MONGO_URI", "")
 STORAGE_CHANNEL = parse_chat_target(os.environ.get("STORAGE_CHANNEL", "0"))
 VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "0"))
 MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
+BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "0"))
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
@@ -49,6 +52,7 @@ app = Client("all_in_one_movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token
 db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
+bot_users_col = db_client["MovieDB"]["bot_users"]
 
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -67,7 +71,52 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# HELPER FUNCTIONS (IMDb & SINGLE LANGUAGE DETECTION)
+# ONE-TIME BACKUP VERIFICATION HELPER
+# =========================================================
+async def check_user_access(client: Client, user_id: int) -> bool:
+    # Check if user already verified in DB
+    user_record = await bot_users_col.find_one({"user_id": user_id})
+    if user_record and user_record.get("fsub_verified"):
+        return True
+
+    if not BACKUP_CHANNEL:
+        return True
+
+    # Check live membership
+    try:
+        member = await client.get_chat_member(BACKUP_CHANNEL, user_id)
+        if member.status not in ["kicked", "left"]:
+            # Mark verified in DB permanently
+            await bot_users_col.update_one(
+                {"user_id": user_id},
+                {"$set": {"user_id": user_id, "fsub_verified": True, "verified_at": datetime.utcnow()}},
+                upsert=True
+            )
+            return True
+    except UserNotParticipant:
+        return False
+    except Exception as e:
+        print(f"⚠️ Live check error: {e}")
+        return True
+
+    return False
+
+async def get_backup_button(client: Client, start_param: str = "") -> InlineKeyboardMarkup:
+    buttons = []
+    if BACKUP_CHANNEL:
+        try:
+            chat = await client.get_chat(BACKUP_CHANNEL)
+            url = f"https://t.me/{chat.username}" if chat.username else (await client.export_chat_invite_link(BACKUP_CHANNEL))
+            buttons.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=url)])
+        except Exception:
+            pass
+
+    try_url = f"https://t.me/{BOT_USERNAME}?start={start_param}" if start_param else f"https://t.me/{BOT_USERNAME}?start"
+    buttons.append([InlineKeyboardButton("🔄 Verify & Continue", url=try_url)])
+    return InlineKeyboardMarkup(buttons)
+
+# =========================================================
+# HELPER FUNCTIONS (IMDb & LANGUAGE)
 # =========================================================
 def parse_movie_query(filename: str):
     name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
@@ -119,7 +168,7 @@ async def fetch_imdb_data(filename: str):
     return None
 
 # =========================================================
-# 1. STREAMING & 2-STEP ADS DOWNLOAD WEB SERVER
+# 1. STREAMING & 2-STEP ADS DOWNLOAD
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -313,13 +362,20 @@ async def handle_storage_upload(client: Client, message: Message):
 
     main_watch_url = f"{BASE_URL}/watch/{msg_id}"
     main_dl_url = f"{BASE_URL}/download/{msg_id}"
+    get_tg_file_url = f"https://t.me/{BOT_USERNAME}?start=getfile_{msg_id}"
     buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
     vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
     main_buttons = [
         [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
-        [InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url), InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)],
-        [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)]
+        [
+            InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url),
+            InlineKeyboardButton("⚡ Get TG File", url=get_tg_file_url)
+        ],
+        [
+            InlineKeyboardButton("⚡ Instant (5 ⭐️)", url=buy_stars_url),
+            InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)
+        ]
     ]
     main_markup = InlineKeyboardMarkup(main_buttons)
 
@@ -428,10 +484,9 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. VIP PEER RESOLVER & BOT COMMANDS
+# 4. VIP PEER RESOLVER & BOT COMMANDS (ONE-TIME VERIFY)
 # =========================================================
 
-# VIP Channel එකෙන් message එකක් bot වෙත forward කළ විට hash එක ස්වයංක්‍රීයව register කරගැනීම
 @app.on_message(filters.private & filters.forwarded)
 async def resolve_vip_peer(client: Client, message: Message):
     if message.forward_from_chat and message.forward_from_chat.id == VIP_CHANNEL:
@@ -445,12 +500,31 @@ async def resolve_vip_peer(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client: Client, message: Message):
     text = message.text
-    if len(text.split()) > 1:
-        param = text.split()[1]
+    param = text.split()[1] if len(text.split()) > 1 else ""
 
-        if param.startswith("vipfile_"):
+    # VIP Access (No Verification Needed)
+    if param.startswith("vipfile_"):
+        msg_id = int(param.split("_")[1])
+        await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
+        await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+        return
+
+    # Check 1-Time Verification for First-Time Users
+    if not await check_user_access(client, message.from_user.id):
+        markup = await get_backup_button(client, param)
+        await message.reply_text(
+            "🔒 **පළමු වර බාගත කිරීම සත්‍යාපනය (First-Time Verification):**\n\n"
+            "චිත්‍රපට ලබා ගැනීමට ප්‍රථමයෙන් අපගේ **Backup Channel** එකට එක්වන්න.\n"
+            "*(මෙය අවශ්‍ය වන්නේ පළමු වතාවට පමණි)*",
+            reply_markup=markup
+        )
+        return
+
+    # Once verified, process their action
+    if param:
+        if param.startswith("getfile_"):
             msg_id = int(param.split("_")[1])
-            await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
+            await message.reply_text("📥 මෙන්න ඔබගේ Movie File එක:")
             await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
             return
 
@@ -479,6 +553,15 @@ async def handle_start(client: Client, message: Message):
 
 @app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help"]))
 async def handle_search(client: Client, message: Message):
+    if not await check_user_access(client, message.from_user.id):
+        markup = await get_backup_button(client)
+        await message.reply_text(
+            "🔒 **පළමු වර සෙවීම සත්‍යාපනය (First-Time Verification):**\n"
+            "කරුණාකර අපගේ Backup Channel එකට Join වී සෙවීම ආරම්භ කරන්න:",
+            reply_markup=markup
+        )
+        return
+
     query = message.text.strip()
     regex = {"file_name": {"$regex": re.escape(query), "$options": "i"}}
     
@@ -508,10 +591,28 @@ async def handle_search(client: Client, message: Message):
         caption = f"🎬 **{file['file_name']}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **නැරඹීමට හෝ බාගත කිරීමට තෝරන්න:**"
         buttons = [
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
-            [InlineKeyboardButton("📥 Fast Download", url=dl_url), InlineKeyboardButton("⚡ Direct File (5 ⭐️)", callback_data=f"buy_single_{msg_id}")],
-            [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")]
+            [
+                InlineKeyboardButton("📥 Fast Download", url=dl_url),
+                InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{msg_id}")
+            ],
+            [
+                InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}"),
+                InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")
+            ]
         ]
         await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
+
+@app.on_callback_query(filters.regex(r"^getfile_"))
+async def send_free_file(client: Client, callback: CallbackQuery):
+    if not await check_user_access(client, callback.from_user.id):
+        markup = await get_backup_button(client)
+        await callback.message.reply_text("🔒 කරුණාකර Backup Channel එකට Join වී නැවත උත්සාහ කරන්න:", reply_markup=markup)
+        await callback.answer()
+        return
+
+    msg_id = int(callback.data.split("_")[1])
+    await callback.answer()
+    await client.copy_message(chat_id=callback.from_user.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
 
 @app.on_callback_query(filters.regex(r"^buy_single_"))
 async def pay_single(client: Client, callback: CallbackQuery):
