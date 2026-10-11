@@ -13,6 +13,18 @@ from pyrogram.types import (
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
+# Helper: Channel ID / Username Safe Parser
+def parse_chat_target(val: str):
+    if not val:
+        return 0
+    val = val.strip()
+    if val.startswith("@") or not val.lstrip("-").isdigit():
+        return val if val.startswith("@") else f"@{val}"
+    try:
+        return int(val)
+    except ValueError:
+        return val
+
 # =========================================================
 # CONFIGURATIONS
 # =========================================================
@@ -20,9 +32,11 @@ API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "")
-STORAGE_CHANNEL = int(os.environ.get("STORAGE_CHANNEL", "0"))
-VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "0"))
-MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL", "0"))
+
+STORAGE_CHANNEL = parse_chat_target(os.environ.get("STORAGE_CHANNEL", "0"))
+VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "0"))
+MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "0"))
+
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
 
@@ -189,7 +203,6 @@ async def handle_storage_upload(client: Client, message: Message):
 
     print(f"\n📥 [Storage Channel] New File: {file_name} (Msg ID: {msg_id})")
 
-    # 1. MongoDB එකට Save කිරීම
     try:
         await files_col.update_one(
             {"file_name": file_name},
@@ -204,7 +217,6 @@ async def handle_storage_upload(client: Client, message: Message):
     except Exception as db_err:
         print(f"❌ DB Error: {db_err}")
 
-    # 2. OMDb / IMDb විස්තර ලබාගැනීම
     imdb = await fetch_imdb_data(file_name)
 
     watch_url = f"{BASE_URL}/watch/{msg_id}"
@@ -254,36 +266,35 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
-    # Post කළ යුතු Channels
     target_channels = [ch for ch in [MAIN_CHANNEL, VIP_CHANNEL] if ch]
 
-    for ch_id in target_channels:
+    for ch in target_channels:
         posted = False
         if poster_bytes:
             try:
                 photo_file = io.BytesIO(poster_bytes)
                 photo_file.name = "poster.jpg"
                 await client.send_photo(
-                    chat_id=int(ch_id),
+                    chat_id=ch,
                     photo=photo_file,
                     caption=caption,
                     reply_markup=reply_markup
                 )
-                print(f"🚀 Photo Post successfully published to: {ch_id}")
+                print(f"🚀 Photo Post published to: {ch}")
                 posted = True
             except Exception as p_err:
-                print(f"⚠️ Photo Post failed for {ch_id}: {p_err}. Trying text fallback...")
+                print(f"⚠️ Photo Post failed for {ch}: {p_err}. Trying text fallback...")
 
         if not posted:
             try:
                 await client.send_message(
-                    chat_id=int(ch_id),
+                    chat_id=ch,
                     text=caption,
                     reply_markup=reply_markup
                 )
-                print(f"🚀 Text Post successfully published to: {ch_id}")
+                print(f"🚀 Text Post published to: {ch}")
             except Exception as t_err:
-                print(f"❌ Text post also failed for {ch_id}: {t_err}")
+                print(f"❌ Text post also failed for {ch}: {t_err}")
 
 # =========================================================
 # 3. BOT SEARCH (NO DUPLICATES)
@@ -425,13 +436,13 @@ async def main():
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    for name, ch_id in [("Storage", STORAGE_CHANNEL), ("Main", MAIN_CHANNEL), ("VIP", VIP_CHANNEL)]:
-        if ch_id:
+    for name, ch in [("Storage", STORAGE_CHANNEL), ("Main", MAIN_CHANNEL), ("VIP", VIP_CHANNEL)]:
+        if ch:
             try:
-                chat = await app.get_chat(ch_id)
-                print(f"✅ Verified Access to {name} Channel: {chat.title} ({ch_id})")
+                chat = await app.get_chat(ch)
+                print(f"✅ Verified Access to {name} Channel: {chat.title} ({ch})")
             except Exception as e:
-                print(f"❌ Cannot access {name} Channel ({ch_id}): {e}")
+                print(f"❌ Cannot access {name} Channel ({ch}): {e}")
 
     web_app = web.Application()
     web_app.add_routes(routes)
