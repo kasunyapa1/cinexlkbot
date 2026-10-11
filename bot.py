@@ -19,6 +19,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "")
 STORAGE_CHANNEL = int(os.environ.get("STORAGE_CHANNEL", "0"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "0"))
+MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL", "0"))
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
+OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "")
 
 BASE_URL = os.environ.get("BASE_URL", "")
 MONETAG_STREAM_LINK = os.environ.get("MONETAG_STREAM_LINK", "")
@@ -46,8 +49,29 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
+# Helper: Clean movie title and fetch IMDb info
+def clean_movie_name(filename: str):
+    name = re.sub(r"\[.*?\]|\(.*?\)", "", filename)
+    name = re.sub(r"(1080p|720p|480p|BluRay|WEB-DL|HDRip|x264|x265|HEVC|AAC|\.mp4|\.mkv|\.avi)", "", name, flags=re.IGNORECASE)
+    name = name.replace(".", " ").replace("_", " ").strip()
+    return name
+
+async def fetch_imdb_data(query: str):
+    if not OMDB_API_KEY:
+        return None
+    url = f"https://www.omdbapi.com/?t={query}&apikey={OMDB_API_KEY}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
+                if data.get("Response") == "True":
+                    return data
+    except Exception:
+        pass
+    return None
+
 # =========================================================
-# 1. STREAMING SERVER + MONETAG 4-MILESTONE ADS
+# 1. STREAMING SERVER + MONETAG ADS
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -72,12 +96,7 @@ PLAYER_HTML = """
         const AD_URL = "{ad_url}";
         const video = document.getElementById('moviePlayer');
 
-        let adTriggers = {{
-            start: false,
-            p25: false,
-            p50: false,
-            p75: false
-        }};
+        let adTriggers = {{ start: false, p25: false, p50: false, p75: false }};
 
         function triggerAd() {{
             window.open(AD_URL, '_blank');
@@ -93,19 +112,9 @@ PLAYER_HTML = """
         video.addEventListener('timeupdate', function() {{
             if (!video.duration) return;
             const percent = (video.currentTime / video.duration) * 100;
-
-            if (percent >= 25 && !adTriggers.p25) {{
-                adTriggers.p25 = true;
-                triggerAd();
-            }}
-            if (percent >= 50 && !adTriggers.p50) {{
-                adTriggers.p50 = true;
-                triggerAd();
-            }}
-            if (percent >= 75 && !adTriggers.p75) {{
-                adTriggers.p75 = true;
-                triggerAd();
-            }}
+            if (percent >= 25 && !adTriggers.p25) {{ adTriggers.p25 = true; triggerAd(); }}
+            if (percent >= 50 && !adTriggers.p50) {{ adTriggers.p50 = true; triggerAd(); }}
+            if (percent >= 75 && !adTriggers.p75) {{ adTriggers.p75 = true; triggerAd(); }}
         }});
     </script>
 </body>
@@ -137,23 +146,110 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. BOT LOGIC, AUTO-INDEX & SEARCH
+# 2. AUTO-INDEX & AUTO-POST TO MAIN CHANNEL (CINEX LK)
 # =========================================================
 
 @app.on_message(filters.chat(STORAGE_CHANNEL) & (filters.document | filters.video))
-async def auto_index(client: Client, message: Message):
+async def handle_storage_upload(client: Client, message: Message):
     media = message.document or message.video
+    file_name = media.file_name or "Unknown Movie"
+    size_mb = round(media.file_size / (1024 * 1024), 2)
+    msg_id = message.id
+
+    # 1. MongoDB එකට Save කිරීම
     await files_col.update_one(
         {"file_id": media.file_id},
         {"$set": {
-            "file_name": media.file_name or "Unknown Movie",
+            "file_name": file_name,
             "file_size": media.file_size,
-            "message_id": message.id
+            "message_id": msg_id
         }},
         upsert=True
     )
 
-@app.on_message(filters.text & filters.incoming & ~filters.command(["start", "help"]))
+    # 2. Cinex LK Main Channel එකට Auto Post කිරීම
+    if MAIN_CHANNEL:
+        clean_name = clean_movie_name(file_name)
+        imdb = await fetch_imdb_data(clean_name)
+
+        watch_url = f"{BASE_URL}/watch/{msg_id}"
+        buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
+        vip_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+
+        buttons = [
+            [InlineKeyboardButton("🌐 Watch Online", url=watch_url)],
+            [
+                InlineKeyboardButton("📥 Fast Download", url=ADSTERRA_DIRECT_LINK),
+                InlineKeyboardButton("⚡ Direct File (5 ⭐️)", url=buy_stars_url)
+            ],
+            [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_url)]
+        ]
+        reply_markup = InlineKeyboardMarkup(buttons)
+
+        if imdb and imdb.get("Poster") and imdb.get("Poster") != "N/A":
+            caption = (
+                f"🎬 **{imdb.get('Title')} ({imdb.get('Year')})**\n\n"
+                f"⭐ **IMDb Rating:** `{imdb.get('imdbRating')}/10`\n"
+                f"🎭 **Genre:** `{imdb.get('Genre')}`\n"
+                f"📦 **Size:** `{size_mb} MB`\n\n"
+                f"📖 **Plot:** {imdb.get('Plot')[:250]}...\n\n"
+                f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
+            )
+            try:
+                await client.send_photo(
+                    chat_id=MAIN_CHANNEL,
+                    photo=imdb.get("Poster"),
+                    caption=caption,
+                    reply_markup=reply_markup
+                )
+                return
+            except Exception:
+                pass
+
+        # Poster එකක් නොලැබුණහොත් Text Post එකක් යවයි
+        caption = (
+            f"🎬 **{file_name}**\n\n"
+            f"📦 **Size:** `{size_mb} MB`\n\n"
+            f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
+        )
+        await client.send_message(
+            chat_id=MAIN_CHANNEL,
+            text=caption,
+            reply_markup=reply_markup
+        )
+
+# =========================================================
+# 3. BOT SEARCH & DEEP-LINK HANDLER (/start buy_123)
+# =========================================================
+
+@app.on_message(filters.command("start") & filters.private)
+async def handle_start(client: Client, message: Message):
+    text = message.text
+    if len(text.split()) > 1:
+        param = text.split()[1]
+        if param.startswith("buy_"):
+            msg_id = param.split("_")[1]
+            await send_stars_invoice(
+                chat_id=message.chat.id,
+                title="Direct Movie File",
+                description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
+                payload=f"single_{msg_id}",
+                stars=5
+            )
+            return
+        elif param == "vip":
+            await send_stars_invoice(
+                chat_id=message.chat.id,
+                title="VIP Membership (30 Days)",
+                description="සියලුම Movies & Series දැන්වීම් නැතිව direct ලබාගන්න.",
+                payload="vip_sub",
+                stars=150
+            )
+            return
+
+    await message.reply_text("👋 **සාදරයෙන් පිළිගන්නවා!**\nඔබට අවශ්‍ය Movie එකේ නම type කර search කරන්න.")
+
+@app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help"]))
 async def handle_search(client: Client, message: Message):
     query = message.text.strip()
     regex = {"file_name": {"$regex": re.escape(query), "$options": "i"}}
@@ -177,11 +273,11 @@ async def handle_search(client: Client, message: Message):
         buttons = [
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
             [
-                InlineKeyboardButton("📥 Download (Adsterra Mirror)", url=ADSTERRA_DIRECT_LINK),
+                InlineKeyboardButton("📥 Download (Adsterra)", url=ADSTERRA_DIRECT_LINK),
                 InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{msg_id}")
             ],
             [InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}")],
-            [InlineKeyboardButton("👑 Buy VIP Pass (No Ads Ever)", callback_data="buy_vip_pass")]
+            [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")]
         ]
         await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -196,7 +292,7 @@ async def send_free_file(client: Client, callback: CallbackQuery):
     )
 
 # =========================================================
-# 3. TELEGRAM STARS PAYMENTS
+# 4. TELEGRAM STARS PAYMENTS
 # =========================================================
 
 @app.on_callback_query(filters.regex(r"^buy_single_"))
@@ -243,7 +339,7 @@ async def payment_success(client: Client, message: Message):
         await message.reply_text(f"👑 **VIP Access සක්‍රිය විය!**\n\nVIP Channel Link:\n{invite.invite_link}")
 
 # =========================================================
-# 4. SERVER STARTUP & KEEP-ALIVE
+# 5. SERVER STARTUP & KEEP-ALIVE
 # =========================================================
 async def main():
     await app.start()
@@ -254,8 +350,6 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     print(f"Server started on port {PORT}")
-    
-    # Render එකේ process එක terminate නොවී තබා ගැනීමට
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
