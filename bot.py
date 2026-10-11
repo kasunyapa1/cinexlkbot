@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 import aiohttp
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -12,7 +12,9 @@ from pyrogram.types import (
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
-# --- Configurations ---
+# =========================================================
+# CONFIGURATIONS
+# =========================================================
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -49,15 +51,19 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
-# Helper: Clean movie title and fetch IMDb info
+# =========================================================
+# HELPER FUNCTIONS (IMDb / OMDb)
+# =========================================================
 def clean_movie_name(filename: str):
-    name = re.sub(r"\[.*?\]|\(.*?\)", "", filename)
-    name = re.sub(r"(1080p|720p|480p|BluRay|WEB-DL|HDRip|x264|x265|HEVC|AAC|\.mp4|\.mkv|\.avi)", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
+    name = re.sub(r"\[.*?\]|\(.*?\)", "", name)
+    name = re.sub(r"(1080p|720p|480p|BluRay|WEB-DL|HDRip|x264|x265|HEVC|AAC)", "", name, flags=re.IGNORECASE)
     name = name.replace(".", " ").replace("_", " ").strip()
     return name
 
 async def fetch_imdb_data(query: str):
     if not OMDB_API_KEY:
+        print("⚠️ OMDB_API_KEY is missing in Environment Variables!")
         return None
     url = f"https://www.omdbapi.com/?t={query}&apikey={OMDB_API_KEY}"
     try:
@@ -66,8 +72,10 @@ async def fetch_imdb_data(query: str):
                 data = await resp.json()
                 if data.get("Response") == "True":
                     return data
-    except Exception:
-        pass
+                else:
+                    print(f"⚠️ OMDb Error for query '{query}': {data.get('Error')}")
+    except Exception as e:
+        print(f"⚠️ OMDb Request Exception: {e}")
     return None
 
 # =========================================================
@@ -149,27 +157,34 @@ async def stream_media(request):
 # 2. AUTO-INDEX & AUTO-POST TO CHANNELS (MAIN & VIP)
 # =========================================================
 
-@app.on_message(filters.chat(STORAGE_CHANNEL) & (filters.document | filters.video))
+@app.on_message((filters.document | filters.video))
 async def handle_storage_upload(client: Client, message: Message):
+    if message.chat.id != STORAGE_CHANNEL:
+        return
+
     media = message.document or message.video
     file_name = media.file_name or "Unknown Movie"
     size_mb = round(media.file_size / (1024 * 1024), 2)
     msg_id = message.id
 
-    # 1. MongoDB එකට Save කිරීම
-    await files_col.update_one(
-        {"file_id": media.file_id},
-        {"$set": {
-            "file_name": file_name,
-            "file_size": media.file_size,
-            "message_id": msg_id
-        }},
-        upsert=True
-    )
-    print(f" Saved to DB: {file_name}")
+    print(f"📥 New File Detected in Storage Channel: {file_name} (Msg ID: {msg_id})")
 
-    # 2. Movie Name එක Clean කර IMDb / OMDb දත්ත ලබාගැනීම
+    try:
+        await files_col.update_one(
+            {"file_id": media.file_id},
+            {"$set": {
+                "file_name": file_name,
+                "file_size": media.file_size,
+                "message_id": msg_id
+            }},
+            upsert=True
+        )
+        print(f"✅ Saved to DB: {file_name}")
+    except Exception as db_err:
+        print(f"❌ DB Error: {db_err}")
+
     clean_name = clean_movie_name(file_name)
+    print(f"🔍 Searching IMDb for: '{clean_name}'")
     imdb = await fetch_imdb_data(clean_name)
 
     watch_url = f"{BASE_URL}/watch/{msg_id}"
@@ -186,7 +201,6 @@ async def handle_storage_upload(client: Client, message: Message):
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
 
-    # Caption සකස් කිරීම
     if imdb and imdb.get("Response") == "True":
         title = f"{imdb.get('Title')} ({imdb.get('Year')})"
         rating = imdb.get('imdbRating', 'N/A')
@@ -210,7 +224,6 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
-    # Post කළ යුතු Channels ලැයිස්තුව (Main Channel සහ VIP Channel)
     target_channels = []
     if MAIN_CHANNEL:
         target_channels.append(MAIN_CHANNEL)
@@ -232,9 +245,9 @@ async def handle_storage_upload(client: Client, message: Message):
                     text=caption,
                     reply_markup=reply_markup
                 )
-            print(f" Successfully posted to channel {ch_id}")
+            print(f"🚀 Successfully posted to channel: {ch_id}")
         except Exception as e:
-            print(f" Failed to post to channel {ch_id}: {e}")
+            print(f"❌ Failed to post to channel {ch_id}: {e}")
 
 # =========================================================
 # 3. BOT SEARCH & DEEP-LINK HANDLER (/start buy_123)
@@ -359,15 +372,11 @@ async def payment_success(client: Client, message: Message):
 # =========================================================
 # 5. SERVER STARTUP & KEEP-ALIVE
 # =========================================================
-from pyrogram import idle
-
 async def main():
-    # 1. Telegram Bot එක Start කිරීම
     await app.start()
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    # 2. Web Streaming Server එක Start කිරීම
     web_app = web.Application()
     web_app.add_routes(routes)
     runner = web.AppRunner(web_app)
@@ -376,7 +385,6 @@ async def main():
     await site.start()
     print(f"🌐 Web Server live on port {PORT}")
 
-    # 3. Bot එක Telegram updates වලට සවන් දීමට (Idle) තැබීම
     await idle()
     await app.stop()
 
