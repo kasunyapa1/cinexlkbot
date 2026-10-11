@@ -50,7 +50,6 @@ db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
 
-# Telegram Stars Helper
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     data = {
@@ -68,7 +67,7 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# HELPER FUNCTIONS (IMDb & LANGUAGE)
+# HELPER FUNCTIONS (IMDb & SINGLE LANGUAGE DETECTION)
 # =========================================================
 def parse_movie_query(filename: str):
     name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
@@ -120,7 +119,7 @@ async def fetch_imdb_data(filename: str):
     return None
 
 # =========================================================
-# 1. STREAMING & 2-STEP ADS DOWNLOAD
+# 1. STREAMING & 2-STEP ADS DOWNLOAD WEB SERVER
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -283,7 +282,7 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-POST TO MAIN & VIP CHANNELS
+# 2. AUTO-POST TO CHANNELS
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -312,7 +311,6 @@ async def handle_storage_upload(client: Client, message: Message):
 
     imdb = await fetch_imdb_data(file_name)
 
-    # 1. Main Channel Buttons
     main_watch_url = f"{BASE_URL}/watch/{msg_id}"
     main_dl_url = f"{BASE_URL}/download/{msg_id}"
     buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
@@ -325,7 +323,6 @@ async def handle_storage_upload(client: Client, message: Message):
     ]
     main_markup = InlineKeyboardMarkup(main_buttons)
 
-    # 2. VIP Channel Buttons (Clean & Instant)
     vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
     vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
 
@@ -402,19 +399,20 @@ async def handle_storage_upload(client: Client, message: Message):
 async def vip_expiry_checker():
     while True:
         try:
+            await asyncio.sleep(60)
             now = datetime.utcnow()
-            # Find users whose expiry_date <= now
-            expired_users = await vip_users_col.find({"expiry_date": {"$lte": now}}).to_list(length=100)
+            cursor = vip_users_col.find({"expiry_date": {"$lte": now}})
+            expired_users = await cursor.to_list(length=50)
 
             for u in expired_users:
-                user_id = u["user_id"]
+                user_id = u.get("user_id")
+                if not user_id:
+                    continue
                 try:
-                    # Remove from VIP channel (ban & unban trick removes member)
                     await app.ban_chat_member(VIP_CHANNEL, user_id)
                     await app.unban_chat_member(VIP_CHANNEL, user_id)
                     print(f"🔒 Removed expired VIP member: {user_id}")
 
-                    # Notify user
                     await app.send_message(
                         chat_id=user_id,
                         text="⚠️ **ඔබගේ Cinex LK VIP සාමාජිකත්වය දින 30 අවසන් විය!**\nනැවත සම්බන්ධ වීමට /start ගොස් VIP Pass එක ලබාගන්න."
@@ -422,18 +420,27 @@ async def vip_expiry_checker():
                 except Exception as kick_err:
                     print(f"⚠️ Failed to remove VIP member {user_id}: {kick_err}")
 
-                # Delete from DB
                 await vip_users_col.delete_one({"_id": u["_id"]})
 
         except Exception as e:
             print(f"⚠️ VIP Checker error: {e}")
 
-        # Check every 6 hours
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. BOT COMMANDS & STARS PAYMENTS
+# 4. VIP PEER RESOLVER & BOT COMMANDS
 # =========================================================
+
+# VIP Channel එකෙන් message එකක් bot වෙත forward කළ විට hash එක ස්වයංක්‍රීයව register කරගැනීම
+@app.on_message(filters.private & filters.forwarded)
+async def resolve_vip_peer(client: Client, message: Message):
+    if message.forward_from_chat and message.forward_from_chat.id == VIP_CHANNEL:
+        try:
+            chat = await client.get_chat(VIP_CHANNEL)
+            await message.reply_text(f"✅ VIP Channel Peer සාර්ථකව සම්බන්ධ විය: {chat.title}")
+            print(f"✅ VIP Peer resolved via forward: {chat.title}")
+        except Exception as e:
+            await message.reply_text(f"⚠️ Error resolving VIP peer: {e}")
 
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client: Client, message: Message):
@@ -540,25 +547,21 @@ async def raw_update_handler(client: Client, update, users, chats):
 async def payment_success(client: Client, message: Message):
     payload = message.successful_payment.invoice_payload
 
-    # Single Movie File Purchase
     if payload.startswith("single_"):
         msg_id = int(payload.split("_")[1])
         await message.reply_text("🎉 **ගෙවීම සාර්ථකයි!** මෙන්න Movie එක:")
         await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
 
-    # 30-Day VIP Pass Purchase
     elif payload == "vip_sub":
         user_id = message.from_user.id
         expiry_date = datetime.utcnow() + timedelta(days=30)
 
-        # 1. Save user to MongoDB with 30-day expiry
         await vip_users_col.update_one(
             {"user_id": user_id},
             {"$set": {"user_id": user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
             upsert=True
         )
 
-        # 2. Create a Single-Use Invite Link (only for this user)
         try:
             invite = await client.create_chat_invite_link(chat_id=VIP_CHANNEL, member_limit=1)
             await message.reply_text(
@@ -578,7 +581,6 @@ async def main():
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    # VIP Expiry Background Task එක Start කිරීම
     asyncio.create_task(vip_expiry_checker())
 
     web_app = web.Application()
