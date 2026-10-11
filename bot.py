@@ -52,28 +52,47 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (IMDb / OMDb)
 # =========================================================
-def clean_movie_name(filename: str):
+def parse_movie_query(filename: str):
     name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
     name = re.sub(r"\[.*?\]|\(.*?\)", "", name)
     name = re.sub(r"(1080p|720p|480p|2160p|4k|BluRay|WEB-DL|HDRip|x264|x265|HEVC|AAC|DDP|ESub)", "", name, flags=re.IGNORECASE)
     name = name.replace(".", " ").replace("_", " ").strip()
-    return name
 
-async def fetch_imdb_data(query: str):
+    match_year = re.search(r"\b(19\d\d|20\d\d)\b", name)
+    year = match_year.group(1) if match_year else None
+    if year:
+        title = re.sub(r"\b" + year + r"\b", "", name).strip()
+    else:
+        title = name.strip()
+
+    return title, year
+
+async def fetch_imdb_data(filename: str):
     if not OMDB_API_KEY:
-        print("⚠️ OMDB_API_KEY is not set.")
+        print("⚠️ OMDB_API_KEY is not configured in Environment Variables.")
         return None
-    url = f"https://www.omdbapi.com/?t={query}&apikey={OMDB_API_KEY}"
+
+    title, year = parse_movie_query(filename)
+    if year:
+        url = f"https://www.omdbapi.com/?t={title}&y={year}&apikey={OMDB_API_KEY}"
+    else:
+        url = f"https://www.omdbapi.com/?t={title}&apikey={OMDB_API_KEY}"
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
                 data = await resp.json()
                 if data.get("Response") == "True":
                     return data
-                else:
-                    print(f"⚠️ OMDb API response for '{query}': {data.get('Error')}")
+                
+                fallback_url = f"https://www.omdbapi.com/?t={title}&apikey={OMDB_API_KEY}"
+                async with session.get(fallback_url) as fb_resp:
+                    fb_data = await fb_resp.json()
+                    if fb_data.get("Response") == "True":
+                        return fb_data
+                    print(f"⚠️ OMDb API error for '{title}': {fb_data.get('Error')}")
     except Exception as e:
         print(f"⚠️ OMDb Request Exception: {e}")
     return None
@@ -179,13 +198,11 @@ async def handle_storage_upload(client: Client, message: Message):
             }},
             upsert=True
         )
-        print(f"✅ DB Updated successfully for: {file_name}")
+        print(f"✅ DB Updated for: {file_name}")
     except Exception as db_err:
         print(f"❌ DB Error: {db_err}")
 
-    clean_name = clean_movie_name(file_name)
-    print(f"🔍 Searching IMDb for: '{clean_name}'")
-    imdb = await fetch_imdb_data(clean_name)
+    imdb = await fetch_imdb_data(file_name)
 
     watch_url = f"{BASE_URL}/watch/{msg_id}"
     buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
@@ -247,19 +264,19 @@ async def handle_storage_upload(client: Client, message: Message):
                 )
             print(f"🚀 Successfully posted to channel: {ch_id}")
         except Exception as e:
-            print(f"❌ Failed to post to channel {ch_id}: {e}")
+            print(f"❌ Failed to post photo to {ch_id}: {e}")
             try:
                 await client.send_message(
                     chat_id=ch_id,
                     text=caption,
                     reply_markup=reply_markup
                 )
-                print(f"⚠️ Fallback text post sent to: {ch_id}")
+                print(f"⚠️ Sent fallback text post to: {ch_id}")
             except Exception as e2:
-                print(f"❌ Both photo and text failed for {ch_id}: {e2}")
+                print(f"❌ All attempts failed for {ch_id}: {e2}")
 
 # =========================================================
-# 3. BOT SEARCH (DUPLICATES REMOVED)
+# 3. BOT SEARCH (NO DUPLICATES)
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -391,14 +408,13 @@ async def payment_success(client: Client, message: Message):
         await message.reply_text(f"👑 **VIP Access සක්‍රිය විය!**\n\nVIP Channel Link:\n{invite.invite_link}")
 
 # =========================================================
-# 5. SERVER STARTUP & RESOLVE CHANNELS
+# 5. SERVER STARTUP & KEEP-ALIVE
 # =========================================================
 async def main():
     await app.start()
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    # Channels resolve කිරීම (Peer id invalid නොවීමට)
     for name, ch_id in [("Storage", STORAGE_CHANNEL), ("Main", MAIN_CHANNEL), ("VIP", VIP_CHANNEL)]:
         if ch_id:
             try:
