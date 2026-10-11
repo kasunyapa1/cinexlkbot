@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import asyncio
 import aiohttp
 from pyrogram import Client, filters, idle
@@ -188,6 +189,7 @@ async def handle_storage_upload(client: Client, message: Message):
 
     print(f"\n📥 [Storage Channel] New File: {file_name} (Msg ID: {msg_id})")
 
+    # 1. MongoDB එකට Save කිරීම
     try:
         await files_col.update_one(
             {"file_name": file_name},
@@ -202,6 +204,7 @@ async def handle_storage_upload(client: Client, message: Message):
     except Exception as db_err:
         print(f"❌ DB Error: {db_err}")
 
+    # 2. OMDb / IMDb විස්තර ලබාගැනීම
     imdb = await fetch_imdb_data(file_name)
 
     watch_url = f"{BASE_URL}/watch/{msg_id}"
@@ -218,13 +221,14 @@ async def handle_storage_upload(client: Client, message: Message):
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
 
+    poster_bytes = None
     if imdb and imdb.get("Response") == "True":
         title = f"{imdb.get('Title')} ({imdb.get('Year')})"
         rating = imdb.get('imdbRating', 'N/A')
         genre = imdb.get('Genre', 'N/A')
         plot = imdb.get('Plot', 'No description available.')
-        poster_url = imdb.get("Poster") if imdb.get("Poster") != "N/A" else None
-        
+        raw_poster = imdb.get("Poster")
+
         caption = (
             f"🎬 **{title}**\n\n"
             f"⭐ **IMDb Rating:** `{rating}/10`\n"
@@ -233,47 +237,53 @@ async def handle_storage_upload(client: Client, message: Message):
             f"📖 **Story:** {plot[:250]}...\n\n"
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
+
+        if raw_poster and raw_poster != "N/A":
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(raw_poster) as img_resp:
+                        if img_resp.status == 200:
+                            poster_bytes = await img_resp.read()
+                            print("🖼️ Poster successfully downloaded from IMDb.")
+            except Exception as dl_err:
+                print(f"⚠️ Poster download error: {dl_err}")
     else:
-        poster_url = None
         caption = (
             f"🎬 **{file_name}**\n\n"
             f"📦 **Size:** `{size_mb} MB`\n\n"
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
-    target_channels = []
-    if MAIN_CHANNEL:
-        target_channels.append(MAIN_CHANNEL)
-    if VIP_CHANNEL:
-        target_channels.append(VIP_CHANNEL)
+    # Post කළ යුතු Channels
+    target_channels = [ch for ch in [MAIN_CHANNEL, VIP_CHANNEL] if ch]
 
     for ch_id in target_channels:
-        try:
-            if poster_url:
+        posted = False
+        if poster_bytes:
+            try:
+                photo_file = io.BytesIO(poster_bytes)
+                photo_file.name = "poster.jpg"
                 await client.send_photo(
-                    chat_id=ch_id,
-                    photo=poster_url,
+                    chat_id=int(ch_id),
+                    photo=photo_file,
                     caption=caption,
                     reply_markup=reply_markup
                 )
-            else:
-                await client.send_message(
-                    chat_id=ch_id,
-                    text=caption,
-                    reply_markup=reply_markup
-                )
-            print(f"🚀 Successfully posted to channel: {ch_id}")
-        except Exception as e:
-            print(f"❌ Failed to post photo to {ch_id}: {e}")
+                print(f"🚀 Photo Post successfully published to: {ch_id}")
+                posted = True
+            except Exception as p_err:
+                print(f"⚠️ Photo Post failed for {ch_id}: {p_err}. Trying text fallback...")
+
+        if not posted:
             try:
                 await client.send_message(
-                    chat_id=ch_id,
+                    chat_id=int(ch_id),
                     text=caption,
                     reply_markup=reply_markup
                 )
-                print(f"⚠️ Sent fallback text post to: {ch_id}")
-            except Exception as e2:
-                print(f"❌ All attempts failed for {ch_id}: {e2}")
+                print(f"🚀 Text Post successfully published to: {ch_id}")
+            except Exception as t_err:
+                print(f"❌ Text post also failed for {ch_id}: {t_err}")
 
 # =========================================================
 # 3. BOT SEARCH (NO DUPLICATES)
@@ -419,7 +429,7 @@ async def main():
         if ch_id:
             try:
                 chat = await app.get_chat(ch_id)
-                print(f" Verified Access to {name} Channel: {chat.title} ({ch_id})")
+                print(f"✅ Verified Access to {name} Channel: {chat.title} ({ch_id})")
             except Exception as e:
                 print(f"❌ Cannot access {name} Channel ({ch_id}): {e}")
 
