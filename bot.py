@@ -4,11 +4,11 @@ from pyrogram import Client, filters
 from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    LabeledPrice,
-    PreCheckoutQuery,
     Message,
     CallbackQuery
 )
+from pyrogram.raw.types import InputStorePaymentPurposeStars, LabeledPrice
+from pyrogram.raw.functions.payments import SendPaymentForm, GetPaymentForm
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -21,9 +21,7 @@ STORAGE_CHANNEL = int(os.environ.get("STORAGE_CHANNEL", "0"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "0"))
 
 BASE_URL = os.environ.get("BASE_URL", "")
-# Earning 1: Monetag Link for Video Player Milestones
 MONETAG_STREAM_LINK = os.environ.get("MONETAG_STREAM_LINK", "")
-# Earning 2: Adsterra Direct Link for Download Mirrors
 ADSTERRA_DIRECT_LINK = os.environ.get("ADSTERRA_DIRECT_LINK", "")
 PORT = int(os.environ.get("PORT", "8080"))
 
@@ -32,7 +30,7 @@ db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
 
 # =========================================================
-# 1. STREAMING SERVER + MONETAG 4-MILESTONE ADS (EARNING 1)
+# 1. STREAMING SERVER + MONETAG 4-MILESTONE ADS
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -68,7 +66,6 @@ PLAYER_HTML = f"""
             window.open(AD_URL, '_blank');
         }}
 
-        // 1. Playback ආරම්භයේදී
         document.addEventListener('click', function() {{
             if (!adTriggers.start) {{
                 adTriggers.start = true;
@@ -76,7 +73,6 @@ PLAYER_HTML = f"""
             }}
         }}, {{ once: true }});
 
-        // 2, 3, 4. 25%, 50%, 75% වලදී Monetag Ads Trigger වීම
         video.addEventListener('timeupdate', function() {{
             if (!video.duration) return;
             const percent = (video.currentTime / video.duration) * 100;
@@ -123,10 +119,9 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. BOT LOGIC, AUTO-INDEX & SEARCH (EARNING 2)
+# 2. BOT LOGIC, AUTO-INDEX & SEARCH
 # =========================================================
 
-# Storage Channel එකට වැටෙන Movies Auto Index කිරීම
 @app.on_message(filters.chat(STORAGE_CHANNEL) & (filters.document | filters.video))
 async def auto_index(client: Client, message: Message):
     media = message.document or message.video
@@ -140,7 +135,6 @@ async def auto_index(client: Client, message: Message):
         upsert=True
     )
 
-# Search Handling
 @app.on_message(filters.text & filters.incoming & ~filters.command(["start", "help"]))
 async def handle_search(client: Client, message: Message):
     query = message.text.strip()
@@ -163,16 +157,12 @@ async def handle_search(client: Client, message: Message):
         )
 
         buttons = [
-            # System 1: Monetag Stream Player
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
-            # System 2: Adsterra Direct Link Mirror
             [
                 InlineKeyboardButton("📥 Download (Adsterra Mirror)", url=ADSTERRA_DIRECT_LINK),
                 InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{msg_id}")
             ],
-            # System 3: Telegram Stars Single Buy
-            [InlineKeyboardButton("⚡ Instant File (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}")],
-            # System 4: VIP Pass
+            [InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}")],
             [InlineKeyboardButton("👑 Buy VIP Pass (No Ads Ever)", callback_data="buy_vip_pass")]
         ]
         await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
@@ -188,10 +178,9 @@ async def send_free_file(client: Client, callback: CallbackQuery):
     )
 
 # =========================================================
-# 3. TELEGRAM STARS PAYMENTS (EARNING 3 & 4)
+# 3. TELEGRAM STARS PAYMENTS & INVOICES
 # =========================================================
 
-# Earning 3: Instant 5 Stars Purchase
 @app.on_callback_query(filters.regex(r"^buy_single_"))
 async def pay_single(client: Client, callback: CallbackQuery):
     msg_id = callback.data.split("_")[1]
@@ -201,12 +190,10 @@ async def pay_single(client: Client, callback: CallbackQuery):
         title="Direct Movie File",
         description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
         payload=f"single_{msg_id}",
-        currency="XTR",  # Telegram Stars Native Currency
-        prices=[LabeledPrice(label="Instant Download", amount=5)],
-        start_parameter="instant-pay"
+        currency="XTR",
+        prices=[{"label": "Instant Download", "amount": 5}]
     )
 
-# Earning 4: VIP Pass 150 Stars
 @app.on_callback_query(filters.regex(r"^buy_vip_pass$"))
 async def pay_vip(client: Client, callback: CallbackQuery):
     await callback.answer()
@@ -215,13 +202,12 @@ async def pay_vip(client: Client, callback: CallbackQuery):
         title="VIP Membership (30 Days)",
         description="සියලුම Movies & Series දැන්වීම් නැතිව direct ලබාගන්න.",
         payload="vip_sub",
-        currency="XTR",  # Telegram Stars Native Currency
-        prices=[LabeledPrice(label="VIP Access", amount=150)],
-        start_parameter="vip-pay"
+        currency="XTR",
+        prices=[{"label": "VIP Access", "amount": 150}]
     )
 
 @app.on_pre_checkout_query()
-async def process_checkout(client: Client, query: PreCheckoutQuery):
+async def process_checkout(client: Client, query):
     await query.answer(ok=True)
 
 @app.on_message(filters.successful_payment)
@@ -238,7 +224,7 @@ async def payment_success(client: Client, message: Message):
         await message.reply_text(f"👑 **VIP Access සක්‍රිය විය!**\n\nVIP Channel Link:\n{invite.invite_link}")
 
 # =========================================================
-# 4. SERVER STARTUP
+# 4. STARTUP ENGINE
 # =========================================================
 async def start_services():
     await app.start()
