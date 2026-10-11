@@ -43,6 +43,9 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
         async with session.post(url, json=data) as resp:
             return await resp.json()
 
+# Custom Filter for Successful Payments
+payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
+
 # =========================================================
 # 1. STREAMING SERVER + MONETAG 4-MILESTONE ADS
 # =========================================================
@@ -109,23 +112,23 @@ PLAYER_HTML = f"""
 </html>
 """
 
-@routes.get("/watch/{msg_id}")
+@routes.get("/watch/{{msg_id}}")
 async def watch_page(request):
     msg_id = request.match_info['msg_id']
     return web.Response(text=PLAYER_HTML.format(msg_id=msg_id), content_type='text/html')
 
-@routes.get("/stream/{msg_id}")
+@routes.get("/stream/{{msg_id}}")
 async def stream_media(request):
     msg_id = int(request.match_info['msg_id'])
     msg = await app.get_messages(STORAGE_CHANNEL, msg_id)
     media = msg.document or msg.video
     response = web.StreamResponse(
         status=200,
-        headers={
+        headers={{
             'Content-Type': media.mime_type or 'video/mp4',
             'Content-Length': str(media.file_size),
             'Accept-Ranges': 'bytes'
-        }
+        }}
     )
     await response.prepare(request)
     async for chunk in app.stream_media(msg, limit=0):
@@ -140,19 +143,19 @@ async def stream_media(request):
 async def auto_index(client: Client, message: Message):
     media = message.document or message.video
     await files_col.update_one(
-        {"file_id": media.file_id},
-        {"$set": {
+        {{"file_id": media.file_id}},
+        {{"$set": {{
             "file_name": media.file_name or "Unknown Movie",
             "file_size": media.file_size,
             "message_id": message.id
-        }},
+        }}}},
         upsert=True
     )
 
 @app.on_message(filters.text & filters.incoming & ~filters.command(["start", "help"]))
 async def handle_search(client: Client, message: Message):
     query = message.text.strip()
-    regex = {"file_name": {"$regex": re.escape(query), "$options": "i"}}
+    regex = {{"file_name": {{"$regex": re.escape(query), "$options": "i"}}}}
     results = await files_col.find(regex).limit(5).to_list(length=5)
 
     if not results:
@@ -162,11 +165,11 @@ async def handle_search(client: Client, message: Message):
     for file in results:
         size_mb = round(file["file_size"] / (1024 * 1024), 2)
         msg_id = file["message_id"]
-        watch_url = f"{BASE_URL}/watch/{msg_id}"
+        watch_url = f"{{BASE_URL}}/watch/{{msg_id}}"
 
         caption = (
-            f"🎬 **{file['file_name']}**\n"
-            f"📦 **Size:** `{size_mb} MB`\n\n"
+            f"🎬 **{{file['file_name']}}**\n"
+            f"📦 **Size:** `{{size_mb}} MB`\n\n"
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට තෝරන්න:**"
         )
 
@@ -174,9 +177,9 @@ async def handle_search(client: Client, message: Message):
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
             [
                 InlineKeyboardButton("📥 Download (Adsterra Mirror)", url=ADSTERRA_DIRECT_LINK),
-                InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{msg_id}")
+                InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{{msg_id}}")
             ],
-            [InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}")],
+            [InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{{msg_id}}")],
             [InlineKeyboardButton("👑 Buy VIP Pass (No Ads Ever)", callback_data="buy_vip_pass")]
         ]
         await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
@@ -203,7 +206,7 @@ async def pay_single(client: Client, callback: CallbackQuery):
         chat_id=callback.from_user.id,
         title="Direct Movie File",
         description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
-        payload=f"single_{msg_id}",
+        payload=f"single_{{msg_id}}",
         stars=5
     )
 
@@ -220,13 +223,12 @@ async def pay_vip(client: Client, callback: CallbackQuery):
 
 @app.on_raw_update()
 async def raw_update_handler(client: Client, update, users, chats):
-    # Auto-answer pre-checkout query via HTTP API
     if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
         async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
+            await session.post(url, json={{"pre_checkout_query_id": str(update.query_id), "ok": True}})
 
-@app.on_message(filters.successful_payment)
+@app.on_message(payment_filter)
 async def payment_success(client: Client, message: Message):
     payload = message.successful_payment.invoice_payload
 
@@ -237,7 +239,7 @@ async def payment_success(client: Client, message: Message):
 
     elif payload == "vip_sub":
         invite = await client.create_chat_invite_link(chat_id=VIP_CHANNEL, member_limit=1)
-        await message.reply_text(f"👑 **VIP Access සක්‍රිය විය!**\n\nVIP Channel Link:\n{invite.invite_link}")
+        await message.reply_text(f"👑 **VIP Access සක්‍රිය විය!**\n\nVIP Channel Link:\n{{invite.invite_link}}")
 
 # =========================================================
 # 4. SERVER STARTUP
