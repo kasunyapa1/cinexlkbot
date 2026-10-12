@@ -11,6 +11,8 @@ from pyrogram.types import (
     Message,
     CallbackQuery
 )
+from pyrogram.raw.functions.messages import GetMessages
+from pyrogram.raw.types import InputMessageID
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -33,12 +35,11 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "")
 
-STORAGE_CHANNEL = parse_chat_target(os.environ.get("STORAGE_CHANNEL", "0"))
+STORAGE_CHANNEL = parse_chat_target(os.environ.get("STORAGE_CHANNEL", "-1004413765578"))
 VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
 MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
 BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
 
-STORAGE_INVITE_LINK = os.environ.get("STORAGE_INVITE_LINK", "").strip()
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
 
@@ -53,9 +54,9 @@ files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
-# =========================================================
-# DIRECT TELEGRAM BOT API CALLS (BYPASS PEER CACHE ERRORS)
-# =========================================================
+# Global Storage Peer Cache (Bypasses session reset issues)
+CACHED_STORAGE_PEER = None
+
 async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
     async with aiohttp.ClientSession() as session:
         if photo_file_id:
@@ -345,10 +346,31 @@ async def download_page(request):
 
 @routes.get("/stream/{msg_id}")
 async def stream_media(request):
+    global CACHED_STORAGE_PEER
     try:
         msg_id = int(request.match_info['msg_id'])
-        msg = await app.get_messages(STORAGE_CHANNEL, msg_id)
+        msg = None
+
+        # 1. උත්සාහය 1: සාමාන්‍ය get_messages
+        try:
+            msg = await app.get_messages(STORAGE_CHANNEL, msg_id)
+        except Exception:
+            # 2. උත්සාහය 2: CACHED_STORAGE_PEER භාවිතා කර Raw API Call එකකින් message එක ගැනීම
+            if CACHED_STORAGE_PEER:
+                try:
+                    raw_res = await app.invoke(GetMessages(id=[InputMessageID(id=msg_id)]))
+                    if raw_res and raw_res.messages:
+                        msg = await Message._parse(app, raw_res.messages[0], {raw_res.chats[0].id: raw_res.chats[0]} if raw_res.chats else {})
+                except Exception as raw_e:
+                    print(f"⚠️ Raw message parse fallback failed: {raw_e}")
+
+        if not msg:
+            return web.Response(text="File message not found in storage channel.", status=404)
+
         media = msg.document or msg.video
+        if not media:
+            return web.Response(text="No media found in the specified message.", status=404)
+
         response = web.StreamResponse(
             status=200,
             headers={
@@ -362,7 +384,9 @@ async def stream_media(request):
         async for chunk in app.stream_media(msg, limit=0):
             await response.write(chunk)
         return response
+
     except Exception as e:
+        print(f"❌ Streaming critical error: {e}")
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
@@ -371,9 +395,18 @@ async def stream_media(request):
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
 async def handle_storage_upload(client: Client, message: Message):
+    global CACHED_STORAGE_PEER
     try:
         if str(message.chat.id) != str(STORAGE_CHANNEL):
             return
+
+        # Cache storage peer dynamically on every new upload
+        if not CACHED_STORAGE_PEER:
+            try:
+                CACHED_STORAGE_PEER = await client.resolve_peer(message.chat.id)
+                print(f"✅ Dynamically cached STORAGE_PEER from message event!")
+            except Exception:
+                pass
 
         media = message.document or message.video
         if not media:
@@ -504,17 +537,24 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER (DIRECT BOT API)
+# 4. FORWARD-TO-VIP CONVERTER & STORAGE PEER CACHER
 # =========================================================
 
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
+    global CACHED_STORAGE_PEER
     try:
-        # A. Storage Channel එකෙන් message එකක් bot වෙත forward කළ විට Peer register වීම
         fwd_chat = message.forward_from_chat
+
+        # Storage Channel එකෙන් message එකක් ආ විට peer එක force cache කිරීම
         if fwd_chat and str(fwd_chat.id) == str(STORAGE_CHANNEL):
-            await message.reply_text(f"🎉 **Storage Channel Peer Cached!**\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`")
-            return
+            try:
+                CACHED_STORAGE_PEER = await client.resolve_peer(fwd_chat.id)
+                await message.reply_text(f"🎉 **Storage Channel Peer සාර්ථකව Cache විය!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Web Streaming සහ Direct Download 100% ක් වැඩ කරනු ඇත.")
+                return
+            except Exception as e:
+                await message.reply_text(f"⚠️ Peer Cache Error: {e}")
+                return
 
         target_text = message.caption or message.text or ""
         msg_id = None
@@ -589,7 +629,10 @@ async def handle_start(client: Client, message: Message):
         res = await send_tg_api_copy(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         if not res.get("ok"):
             print(f"⚠️ Bot API copy fallback: {res}")
-            await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+            try:
+                await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+            except Exception as copy_err:
+                await message.reply_text(f"⚠️ File එක ලබාදීමට නොහැකි විය: {copy_err}")
         return
 
     if not await check_user_access(client, message.from_user.id):
@@ -735,20 +778,19 @@ async def payment_success(client: Client, message: Message):
             await message.reply_text("VIP Access සක්‍රිය විය! කරුණාකර Admin අමතන්න.")
 
 # =========================================================
-# 6. SERVER STARTUP & KEEP-ALIVE (STORAGE PEER CACHE)
+# 6. SERVER STARTUP & KEEP-ALIVE
 # =========================================================
 async def main():
+    global CACHED_STORAGE_PEER
     await app.start()
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    # Auto-resolve Storage Channel Peer on startup using Invite Link
-    if STORAGE_INVITE_LINK:
-        try:
-            storage_chat = await app.get_chat(STORAGE_INVITE_LINK)
-            print(f"🎉 Storage Channel Peer Auto-Cached: {storage_chat.title} ({storage_chat.id})")
-        except Exception as st_err:
-            print(f"⚠️ Storage Link resolve error: {st_err}")
+    try:
+        CACHED_STORAGE_PEER = await app.resolve_peer(STORAGE_CHANNEL)
+        print(f"🎉 Storage Channel Peer resolved successfully on startup!")
+    except Exception as res_err:
+        print(f"⚠️ Storage Channel Peer resolve warning: {res_err}")
 
     asyncio.create_task(vip_expiry_checker())
 
