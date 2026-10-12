@@ -9,10 +9,8 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery,
-    ChatJoinRequest
+    CallbackQuery
 )
-from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -74,7 +72,6 @@ payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_pay
 # ONE-TIME BACKUP VERIFICATION HELPER
 # =========================================================
 async def check_user_access(client: Client, user_id: int) -> bool:
-    # Check if user already verified in DB
     user_record = await bot_users_col.find_one({"user_id": user_id})
     if user_record and user_record.get("fsub_verified"):
         return True
@@ -82,22 +79,17 @@ async def check_user_access(client: Client, user_id: int) -> bool:
     if not BACKUP_CHANNEL:
         return True
 
-    # Check live membership
     try:
         member = await client.get_chat_member(BACKUP_CHANNEL, user_id)
         if member.status not in ["kicked", "left"]:
-            # Mark verified in DB permanently
             await bot_users_col.update_one(
                 {"user_id": user_id},
                 {"$set": {"user_id": user_id, "fsub_verified": True, "verified_at": datetime.utcnow()}},
                 upsert=True
             )
             return True
-    except UserNotParticipant:
+    except Exception:
         return False
-    except Exception as e:
-        print(f"⚠️ Live check error: {e}")
-        return True
 
     return False
 
@@ -168,7 +160,7 @@ async def fetch_imdb_data(filename: str):
     return None
 
 # =========================================================
-# 1. STREAMING & 2-STEP ADS DOWNLOAD
+# 1. STREAMING & 2-STEP ADS DOWNLOAD WEB SERVER
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -331,7 +323,7 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-POST TO CHANNELS
+# 2. AUTO-POST TO MAIN CHANNEL ONLY
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -379,15 +371,6 @@ async def handle_storage_upload(client: Client, message: Message):
     ]
     main_markup = InlineKeyboardMarkup(main_buttons)
 
-    vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
-    vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
-
-    vip_buttons = [
-        [InlineKeyboardButton("🌐 Watch Online (No Ads)", url=vip_watch_url)],
-        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_file_url)]
-    ]
-    vip_markup = InlineKeyboardMarkup(vip_buttons)
-
     poster_bytes = None
     if imdb and imdb.get("Response") == "True":
         title = f"{imdb.get('Title')} ({imdb.get('Year')})"
@@ -424,30 +407,25 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
-    targets = []
+    # Post to MAIN CHANNEL
     if MAIN_CHANNEL:
-        targets.append((MAIN_CHANNEL, main_markup, "Main"))
-    if VIP_CHANNEL:
-        targets.append((VIP_CHANNEL, vip_markup, "VIP"))
-
-    for ch, markup, ch_name in targets:
         posted = False
         if poster_bytes:
             try:
                 photo_file = io.BytesIO(poster_bytes)
                 photo_file.name = "poster.jpg"
-                await client.send_photo(chat_id=ch, photo=photo_file, caption=caption, reply_markup=markup)
-                print(f"🚀 Photo Post published to {ch_name} Channel: {ch}")
+                await client.send_photo(chat_id=MAIN_CHANNEL, photo=photo_file, caption=caption, reply_markup=main_markup)
+                print(f"🚀 Photo Post published to Main Channel: {MAIN_CHANNEL}")
                 posted = True
             except Exception as p_err:
-                print(f"⚠️ Photo Post failed for {ch_name} ({ch}): {p_err}. Trying text fallback...")
+                print(f"⚠️ Photo Post failed for Main: {p_err}. Trying text fallback...")
 
         if not posted:
             try:
-                await client.send_message(chat_id=ch, text=caption, reply_markup=markup)
-                print(f"🚀 Text Post published to {ch_name} Channel: {ch}")
+                await client.send_message(chat_id=MAIN_CHANNEL, text=caption, reply_markup=main_markup)
+                print(f"🚀 Text Post published to Main Channel: {MAIN_CHANNEL}")
             except Exception as t_err:
-                print(f"❌ Text post also failed for {ch_name} ({ch}): {t_err}")
+                print(f"❌ Text post also failed for Main: {t_err}")
 
 # =========================================================
 # 3. AUTO-KICK EXPIRED VIP USERS (30 DAYS CHECKER)
@@ -484,18 +462,83 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. VIP PEER RESOLVER & BOT COMMANDS (ONE-TIME VERIFY)
+# 4. FORWARD-TO-VIP CONVERTER (MANUAL SHARE FEATURE)
 # =========================================================
 
+# Main channel එකේ post එක Bot ට forward කළ විට එය VIP Post එකක් බවට හරවා VIP channel එකට යැවීම
 @app.on_message(filters.private & filters.forwarded)
-async def resolve_vip_peer(client: Client, message: Message):
-    if message.forward_from_chat and message.forward_from_chat.id == VIP_CHANNEL:
-        try:
-            chat = await client.get_chat(VIP_CHANNEL)
-            await message.reply_text(f"✅ VIP Channel Peer සාර්ථකව සම්බන්ධ විය: {chat.title}")
-            print(f"✅ VIP Peer resolved via forward: {chat.title}")
-        except Exception as e:
-            await message.reply_text(f"⚠️ Error resolving VIP peer: {e}")
+async def manual_share_to_vip(client: Client, message: Message):
+    # Caption එකෙන් හෝ Text එකෙන් message_id එක හෝ links Extract කරගැනීම
+    target_text = message.caption or message.text or ""
+    
+    # Message එකේ තියෙන buttons වලින් msg_id එක හොයාගැනීම
+    msg_id = None
+    if message.reply_markup and message.reply_markup.inline_keyboard:
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url and "/watch/" in btn.url:
+                    match = re.search(r"/watch/(\d+)", btn.url)
+                    if match:
+                        msg_id = match.group(1)
+                        break
+                elif btn.url and "getfile_" in btn.url:
+                    match = re.search(r"getfile_(\d+)", btn.url)
+                    if match:
+                        msg_id = match.group(1)
+                        break
+            if msg_id:
+                break
+
+    # Buttons වලින් හමු නොවූයේ නම් database එකෙන් movie name එකෙන් සෙවීම
+    if not msg_id and target_text:
+        first_line = target_text.split("\n")[0].replace("🎬", "").strip()
+        first_line_clean = re.sub(r"\(\d{4}\)", "", first_line).strip()
+        db_doc = await files_col.find_one({"file_name": {"$regex": re.escape(first_line_clean), "$options": "i"}})
+        if db_doc:
+            msg_id = str(db_doc.get("message_id"))
+
+    if not msg_id:
+        # සාමාන්‍ය Forward එකක් නම් Ignore කිරීම
+        return
+
+    # VIP Buttons සකස් කිරීම (No Ads, No Stars, No Buy VIP buttons)
+    vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
+    vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
+
+    vip_buttons = [
+        [InlineKeyboardButton("🌐 Watch Online (No Ads)", url=vip_watch_url)],
+        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_file_url)]
+    ]
+    vip_markup = InlineKeyboardMarkup(vip_buttons)
+
+    # VIP Channel එකට Post කිරීම
+    try:
+        if message.photo:
+            # Photo post එකක් නම් photo එක සහ caption එක සමඟ යැවීම
+            photo_id = message.photo.file_id
+            await client.send_photo(
+                chat_id=VIP_CHANNEL,
+                photo=photo_id,
+                caption=target_text,
+                reply_markup=vip_markup
+            )
+        else:
+            # Text post එකක් නම්
+            await client.send_message(
+                chat_id=VIP_CHANNEL,
+                text=target_text,
+                reply_markup=vip_markup
+            )
+
+        await message.reply_text("👑 **සාර්ථකයි!** මෙම Post එක VIP Channel එකට Ad-Free buttons සමඟ Publish කරන ලදී.")
+        print(f"🚀 Manually converted & posted to VIP Channel: Msg ID {msg_id}")
+    except Exception as vip_err:
+        await message.reply_text(f"❌ VIP එකට යැවීමට නොහැකි විය: {vip_err}")
+        print(f"❌ Manual VIP posting error: {vip_err}")
+
+# =========================================================
+# 5. BOT COMMANDS & STARS PAYMENTS
+# =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client: Client, message: Message):
@@ -675,7 +718,7 @@ async def payment_success(client: Client, message: Message):
             await message.reply_text("VIP Access සක්‍රිය විය! කරුණාකර Admin අමතන්න.")
 
 # =========================================================
-# 5. SERVER STARTUP & KEEP-ALIVE
+# 6. SERVER STARTUP & KEEP-ALIVE
 # =========================================================
 async def main():
     await app.start()
