@@ -328,13 +328,12 @@ async def stream_media(request):
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL (CRASH-PROOF)
+# 2. AUTO-POST TO MAIN CHANNEL
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
 async def handle_storage_upload(client: Client, message: Message):
     try:
-        # Chat ID matching (Check both int and raw equality)
         if str(message.chat.id) != str(STORAGE_CHANNEL):
             return
 
@@ -430,7 +429,7 @@ async def handle_storage_upload(client: Client, message: Message):
                     print(f"❌ Text post also failed for Main: {t_err}")
 
     except Exception as general_err:
-        print(f"❌ Storage Handler Crash Prevented: {general_err}")
+        print(f"❌ Storage Handler Error: {general_err}")
 
 # =========================================================
 # 3. AUTO-KICK EXPIRED VIP USERS
@@ -467,23 +466,27 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER & PEER AUTO-REGISTER
+# 4. FORWARD-TO-VIP CONVERTER (NATIVE PEER RESOLVED)
 # =========================================================
 
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
     try:
+        # A. VIP Channel එකෙන් message එකක් bot වෙත forward කළ විට Peer එක ස්ථිරව Register කරගැනීම
         fwd_chat = message.forward_from_chat
         if fwd_chat and str(fwd_chat.id) == str(VIP_CHANNEL):
             try:
-                await client.get_chat(fwd_chat.id)
-                await message.reply_text(f"🎉 **VIP Channel Peer සාර්ථකව Cache විය!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`")
-                print(f"✅ VIP Peer cached: {fwd_chat.title}")
+                # Force register internal peer
+                await client.resolve_peer(fwd_chat.id)
+                chat = await client.get_chat(fwd_chat.id)
+                await message.reply_text(f"🎉 **VIP Peer සාර්ථකව Register විය!**\n\n📌 Title: `{chat.title}`\n🆔 ID: `{chat.id}`\n\nදැන් Main Channel එකේ Post එකක් Forward කර බලන්න.")
+                print(f"✅ VIP Peer registered: {chat.title}")
                 return
             except Exception as e:
-                await message.reply_text(f"⚠️ Peer register error: {e}")
+                await message.reply_text(f"⚠️ Peer resolve error: {e}")
                 return
 
+        # B. Main Channel එකෙන් ආපු Forward එකක් VIP Channel එකට Post කිරීම
         target_text = message.caption or message.text or ""
         msg_id = None
         if message.reply_markup and message.reply_markup.inline_keyboard:
@@ -521,16 +524,22 @@ async def manual_share_to_vip(client: Client, message: Message):
         ]
         vip_markup = InlineKeyboardMarkup(vip_buttons)
 
+        # Telegram Native InputPeer භාවිතා කර VIP Channel එකට යැවීම
+        try:
+            peer = await client.resolve_peer(VIP_CHANNEL)
+        except Exception:
+            peer = VIP_CHANNEL
+
         if message.photo:
             await client.send_photo(
-                chat_id=VIP_CHANNEL,
+                chat_id=peer,
                 photo=message.photo.file_id,
                 caption=target_text,
                 reply_markup=vip_markup
             )
         else:
             await client.send_message(
-                chat_id=VIP_CHANNEL,
+                chat_id=peer,
                 text=target_text,
                 reply_markup=vip_markup
             )
@@ -538,7 +547,8 @@ async def manual_share_to_vip(client: Client, message: Message):
         await message.reply_text("👑 **සාර්ථකයි!** මෙම Post එක VIP Channel එකට Ad-Free buttons සමඟ Publish කරන ලදී.")
         print(f"🚀 Manually converted & posted to VIP Channel: Msg ID {msg_id}")
     except Exception as vip_err:
-        await message.reply_text(f"❌ VIP එකට යැවීමට නොහැකි විය: {vip_err}")
+        await message.reply_text(f"❌ VIP එකට යැවීමට නොහැකි විය: {vip_err}\n\n💡 **විසඳුම:** කරුණාකර Cinex LK VIP Channel එකේ දාපු ඕනෑම Message එකක් Forward කර එක වරක් මෙම Bot වෙත එවන්න (එවිට Peer Register වේ).")
+        print(f"❌ VIP posting error: {vip_err}")
 
 # =========================================================
 # 5. BOT COMMANDS & PAYMENTS
