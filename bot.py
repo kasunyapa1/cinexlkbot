@@ -323,7 +323,7 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL
+# 2. AUTO-POST TO MAIN CHANNEL (NO FREE TELEGRAM FILES)
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -352,18 +352,15 @@ async def handle_storage_upload(client: Client, message: Message):
 
     imdb = await fetch_imdb_data(file_name)
 
+    # Main Channel Buttons (Clean & Monetized)
     main_watch_url = f"{BASE_URL}/watch/{msg_id}"
     main_dl_url = f"{BASE_URL}/download/{msg_id}"
-    get_tg_file_url = f"https://t.me/{BOT_USERNAME}?start=getfile_{msg_id}"
     buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
     vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
     main_buttons = [
         [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
-        [
-            InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url),
-            InlineKeyboardButton("⚡ Get TG File", url=get_tg_file_url)
-        ],
+        [InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url)],
         [
             InlineKeyboardButton("⚡ Instant (5 ⭐️)", url=buy_stars_url),
             InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)
@@ -470,7 +467,6 @@ async def manual_share_to_vip(client: Client, message: Message):
     fwd_chat = message.forward_from_chat
     if fwd_chat and fwd_chat.id == VIP_CHANNEL:
         try:
-            # Force Telegram to register the channel peer hash inside the running session
             await client.get_chat(fwd_chat.id)
             await message.reply_text(f"🎉 **VIP Channel Peer සාර්ථකව Cache විය!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Main Channel එකේ Post එකක් forward කර බලන්න.")
             print(f"✅ VIP Peer cached successfully: {fwd_chat.title} ({fwd_chat.id})")
@@ -491,8 +487,8 @@ async def manual_share_to_vip(client: Client, message: Message):
                     if match:
                         msg_id = match.group(1)
                         break
-                elif btn.url and "getfile_" in btn.url:
-                    match = re.search(r"getfile_(\d+)", btn.url)
+                elif btn.url and "/download/" in btn.url:
+                    match = re.search(r"/download/(\d+)", btn.url)
                     if match:
                         msg_id = match.group(1)
                         break
@@ -509,7 +505,7 @@ async def manual_share_to_vip(client: Client, message: Message):
     if not msg_id:
         return
 
-    # Clean VIP Buttons
+    # Clean VIP Buttons (No Ads)
     vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
     vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
 
@@ -519,7 +515,6 @@ async def manual_share_to_vip(client: Client, message: Message):
     ]
     vip_markup = InlineKeyboardMarkup(vip_buttons)
 
-    # VIP Channel එකට Publish කිරීම
     try:
         if message.photo:
             await client.send_photo(
@@ -550,12 +545,14 @@ async def handle_start(client: Client, message: Message):
     text = message.text
     param = text.split()[1] if len(text.split()) > 1 else ""
 
+    # VIP Direct Access
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
         await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         return
 
+    # 1-Time Verification for regular users
     if not await check_user_access(client, message.from_user.id):
         markup = await get_backup_button(client, param)
         await message.reply_text(
@@ -567,13 +564,7 @@ async def handle_start(client: Client, message: Message):
         return
 
     if param:
-        if param.startswith("getfile_"):
-            msg_id = int(param.split("_")[1])
-            await message.reply_text("📥 මෙන්න ඔබගේ Movie File එක:")
-            await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
-            return
-
-        elif param.startswith("buy_"):
+        if param.startswith("buy_"):
             msg_id = param.split("_")[1]
             await send_stars_invoice(
                 chat_id=message.chat.id,
@@ -636,28 +627,13 @@ async def handle_search(client: Client, message: Message):
         caption = f"🎬 **{file['file_name']}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **නැරඹීමට හෝ බාගත කිරීමට තෝරන්න:**"
         buttons = [
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
-            [
-                InlineKeyboardButton("📥 Fast Download", url=dl_url),
-                InlineKeyboardButton("⚡ Get TG File", callback_data=f"getfile_{msg_id}")
-            ],
+            [InlineKeyboardButton("📥 Fast Download (Ads)", url=dl_url)],
             [
                 InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}"),
                 InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")
             ]
         ]
         await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
-
-@app.on_callback_query(filters.regex(r"^getfile_"))
-async def send_free_file(client: Client, callback: CallbackQuery):
-    if not await check_user_access(client, callback.from_user.id):
-        markup = await get_backup_button(client)
-        await callback.message.reply_text("🔒 කරුණාකර Backup Channel එකට Join වී නැවත උත්සාහ කරන්න:", reply_markup=markup)
-        await callback.answer()
-        return
-
-    msg_id = int(callback.data.split("_")[1])
-    await callback.answer()
-    await client.copy_message(chat_id=callback.from_user.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
 
 @app.on_callback_query(filters.regex(r"^buy_single_"))
 async def pay_single(client: Client, callback: CallbackQuery):
