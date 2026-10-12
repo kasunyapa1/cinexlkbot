@@ -46,46 +46,64 @@ MONETAG_STREAM_LINK = os.environ.get("MONETAG_STREAM_LINK", "")
 ADSTERRA_DIRECT_LINK = os.environ.get("ADSTERRA_DIRECT_LINK", "")
 PORT = int(os.environ.get("PORT", "8080"))
 
-app = Client("all_in_one_movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "all_in_one_movie_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    workers=16,
+    sleep_threshold=30
+)
+
 db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
-# Direct Telegram Bot API helper functions
+# =========================================================
+# 0. DIRECT BOT API REQUESTS (ZERO PEER DEPENDENCY)
+# =========================================================
 async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
-    async with aiohttp.ClientSession() as session:
-        if photo_file_id:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-            payload = {
-                "chat_id": chat_id,
-                "photo": photo_file_id,
-                "caption": text,
-                "parse_mode": "Markdown"
-            }
-        else:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "Markdown"
-            }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
+    try:
+        async with aiohttp.ClientSession() as session:
+            if photo_file_id:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+                payload = {
+                    "chat_id": chat_id,
+                    "photo": photo_file_id,
+                    "caption": text,
+                    "parse_mode": "Markdown"
+                }
+            else:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "Markdown"
+                }
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
 
-        async with session.post(url, json=payload) as resp:
-            return await resp.json()
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                return await resp.json()
+    except Exception as e:
+        print(f"⚠️ Direct Bot API Post Error: {e}")
+        return {"ok": False, "description": str(e)}
 
 async def send_tg_api_copy(chat_id, from_chat_id, message_id):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-    payload = {
-        "chat_id": chat_id,
-        "from_chat_id": from_chat_id,
-        "message_id": message_id
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload) as resp:
-            return await resp.json()
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
+        payload = {
+            "chat_id": chat_id,
+            "from_chat_id": from_chat_id,
+            "message_id": message_id
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                return await resp.json()
+    except Exception as e:
+        print(f"⚠️ Direct Bot API Copy Error: {e}")
+        return {"ok": False, "description": str(e)}
 
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     try:
@@ -200,6 +218,10 @@ async def fetch_imdb_data(filename: str):
 # 1. STREAMING & 2-STEP ADS DOWNLOAD WEB SERVER
 # =========================================================
 routes = web.RouteTableDef()
+
+@routes.get("/")
+async def root_ping(request):
+    return web.Response(text="Bot is Live and Active 24/7!", status=200)
 
 PLAYER_HTML = """
 <!DOCTYPE html>
@@ -346,7 +368,7 @@ async def stream_media(request):
         msg_id = int(request.match_info['msg_id'])
         msg = await app.get_messages(STORAGE_CHANNEL, msg_id)
         if not msg:
-            return web.Response(text="File message not found.", status=404)
+            return web.Response(text="File message not found in storage.", status=404)
 
         media = msg.document or msg.video
         if not media:
@@ -585,7 +607,7 @@ async def manual_share_to_vip(client: Client, message: Message):
         await message.reply_text(f"❌ Error: {vip_err}")
 
 # =========================================================
-# 5. BOT COMMANDS & PAYMENTS (DIRECT API FILE DELIVERY)
+# 5. BOT COMMANDS & PAYMENTS
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -599,7 +621,6 @@ async def handle_start(client: Client, message: Message):
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
         res = await send_tg_api_copy(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         if not res.get("ok"):
-            print(f"⚠️ Bot API copy fallback: {res}")
             try:
                 await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
             except Exception as copy_err:
@@ -749,7 +770,25 @@ async def payment_success(client: Client, message: Message):
             await message.reply_text("VIP Access සක්‍රිය විය! කරුණාකර Admin අමතන්න.")
 
 # =========================================================
-# 6. SERVER STARTUP & KEEP-ALIVE
+# 6. 24/7 SELF-PING & KEEP-ALIVE BACKGROUND WORKER
+# =========================================================
+async def keep_alive_self_ping():
+    await asyncio.sleep(15)
+    while True:
+        try:
+            if BASE_URL:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(BASE_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            print("💓 Keep-Alive Ping Successful (Render Sleep Prevented).")
+        except Exception as ping_err:
+            print(f"⚠️ Keep-Alive Ping Warning: {ping_err}")
+
+        # Every 4 minutes (Render sleeps at 15 minutes, so 4 minutes guarantees 24/7 online)
+        await asyncio.sleep(240)
+
+# =========================================================
+# 7. SERVER STARTUP & RUNNER
 # =========================================================
 async def main():
     await app.start()
@@ -757,6 +796,7 @@ async def main():
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
     asyncio.create_task(vip_expiry_checker())
+    asyncio.create_task(keep_alive_self_ping())
 
     web_app = web.Application()
     web_app.add_routes(routes)
