@@ -52,6 +52,30 @@ files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
+# Direct Telegram Bot API Sender (Bypasses Pyrogram Peer Errors)
+async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
+    async with aiohttp.ClientSession() as session:
+        if photo_file_id:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+            payload = {
+                "chat_id": chat_id,
+                "photo": photo_file_id,
+                "caption": text,
+                "parse_mode": "Markdown"
+            }
+        else:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown"
+            }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+
+        async with session.post(url, json=payload) as resp:
+            return await resp.json()
+
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -466,27 +490,12 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER (NATIVE PEER RESOLVED)
+# 4. FORWARD-TO-VIP CONVERTER (DIRECT TELEGRAM BOT API)
 # =========================================================
 
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
     try:
-        # A. VIP Channel එකෙන් message එකක් bot වෙත forward කළ විට Peer එක ස්ථිරව Register කරගැනීම
-        fwd_chat = message.forward_from_chat
-        if fwd_chat and str(fwd_chat.id) == str(VIP_CHANNEL):
-            try:
-                # Force register internal peer
-                await client.resolve_peer(fwd_chat.id)
-                chat = await client.get_chat(fwd_chat.id)
-                await message.reply_text(f"🎉 **VIP Peer සාර්ථකව Register විය!**\n\n📌 Title: `{chat.title}`\n🆔 ID: `{chat.id}`\n\nදැන් Main Channel එකේ Post එකක් Forward කර බලන්න.")
-                print(f"✅ VIP Peer registered: {chat.title}")
-                return
-            except Exception as e:
-                await message.reply_text(f"⚠️ Peer resolve error: {e}")
-                return
-
-        # B. Main Channel එකෙන් ආපු Forward එකක් VIP Channel එකට Post කිරීම
         target_text = message.caption or message.text or ""
         msg_id = None
         if message.reply_markup and message.reply_markup.inline_keyboard:
@@ -518,37 +527,34 @@ async def manual_share_to_vip(client: Client, message: Message):
         vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
         vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
 
-        vip_buttons = [
-            [InlineKeyboardButton("🌐 Watch Online (No Ads)", url=vip_watch_url)],
-            [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_file_url)]
-        ]
-        vip_markup = InlineKeyboardMarkup(vip_buttons)
+        # Standard Telegram JSON Reply Markup for Direct Bot API
+        api_markup = {
+            "inline_keyboard": [
+                [{"text": "🌐 Watch Online (No Ads)", "url": vip_watch_url}],
+                [{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_file_url}]
+            ]
+        }
 
-        # Telegram Native InputPeer භාවිතා කර VIP Channel එකට යැවීම
-        try:
-            peer = await client.resolve_peer(VIP_CHANNEL)
-        except Exception:
-            peer = VIP_CHANNEL
+        photo_id = message.photo.file_id if message.photo else None
 
-        if message.photo:
-            await client.send_photo(
-                chat_id=peer,
-                photo=message.photo.file_id,
-                caption=target_text,
-                reply_markup=vip_markup
-            )
+        # Directly send via Telegram Bot API (No Pyrogram peer errors)
+        res = await send_tg_api_post(
+            chat_id=VIP_CHANNEL,
+            text=target_text,
+            reply_markup=api_markup,
+            photo_file_id=photo_id
+        )
+
+        if res.get("ok"):
+            await message.reply_text("👑 **සාර්ථකයි!** මෙම Post එක VIP Channel එකට Ad-Free buttons සමඟ Publish කරන ලදී.")
+            print(f"🚀 Published to VIP Channel via Bot API: Msg ID {msg_id}")
         else:
-            await client.send_message(
-                chat_id=peer,
-                text=target_text,
-                reply_markup=vip_markup
-            )
+            err_desc = res.get("description", "Unknown error")
+            await message.reply_text(f"❌ Telegram API Error: {err_desc}")
+            print(f"❌ Telegram API Error: {res}")
 
-        await message.reply_text("👑 **සාර්ථකයි!** මෙම Post එක VIP Channel එකට Ad-Free buttons සමඟ Publish කරන ලදී.")
-        print(f"🚀 Manually converted & posted to VIP Channel: Msg ID {msg_id}")
     except Exception as vip_err:
-        await message.reply_text(f"❌ VIP එකට යැවීමට නොහැකි විය: {vip_err}\n\n💡 **විසඳුම:** කරුණාකර Cinex LK VIP Channel එකේ දාපු ඕනෑම Message එකක් Forward කර එක වරක් මෙම Bot වෙත එවන්න (එවිට Peer Register වේ).")
-        print(f"❌ VIP posting error: {vip_err}")
+        await message.reply_text(f"❌ Error: {vip_err}")
 
 # =========================================================
 # 5. BOT COMMANDS & PAYMENTS
