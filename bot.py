@@ -38,6 +38,7 @@ VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
 MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
 BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
 
+STORAGE_INVITE_LINK = os.environ.get("STORAGE_INVITE_LINK", "").strip()
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
 
@@ -52,7 +53,9 @@ files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
-# Direct Telegram Bot API Sender (Bypasses Pyrogram Peer Errors)
+# =========================================================
+# DIRECT TELEGRAM BOT API CALLS (BYPASS PEER CACHE ERRORS)
+# =========================================================
 async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
     async with aiohttp.ClientSession() as session:
         if photo_file_id:
@@ -73,6 +76,17 @@ async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None)
         if reply_markup:
             payload["reply_markup"] = reply_markup
 
+        async with session.post(url, json=payload) as resp:
+            return await resp.json()
+
+async def send_tg_api_copy(chat_id, from_chat_id, message_id):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
+    payload = {
+        "chat_id": chat_id,
+        "from_chat_id": from_chat_id,
+        "message_id": message_id
+    }
+    async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as resp:
             return await resp.json()
 
@@ -490,12 +504,18 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER (DIRECT TELEGRAM BOT API)
+# 4. FORWARD-TO-VIP CONVERTER (DIRECT BOT API)
 # =========================================================
 
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
     try:
+        # A. Storage Channel එකෙන් message එකක් bot වෙත forward කළ විට Peer register වීම
+        fwd_chat = message.forward_from_chat
+        if fwd_chat and str(fwd_chat.id) == str(STORAGE_CHANNEL):
+            await message.reply_text(f"🎉 **Storage Channel Peer Cached!**\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`")
+            return
+
         target_text = message.caption or message.text or ""
         msg_id = None
         if message.reply_markup and message.reply_markup.inline_keyboard:
@@ -511,8 +531,8 @@ async def manual_share_to_vip(client: Client, message: Message):
                         if match:
                             msg_id = match.group(1)
                             break
-                if msg_id:
-                    break
+            if msg_id:
+                break
 
         if not msg_id and target_text:
             first_line = target_text.split("\n")[0].replace("🎬", "").strip()
@@ -527,7 +547,6 @@ async def manual_share_to_vip(client: Client, message: Message):
         vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
         vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
 
-        # Standard Telegram JSON Reply Markup for Direct Bot API
         api_markup = {
             "inline_keyboard": [
                 [{"text": "🌐 Watch Online (No Ads)", "url": vip_watch_url}],
@@ -537,7 +556,6 @@ async def manual_share_to_vip(client: Client, message: Message):
 
         photo_id = message.photo.file_id if message.photo else None
 
-        # Directly send via Telegram Bot API (No Pyrogram peer errors)
         res = await send_tg_api_post(
             chat_id=VIP_CHANNEL,
             text=target_text,
@@ -547,17 +565,16 @@ async def manual_share_to_vip(client: Client, message: Message):
 
         if res.get("ok"):
             await message.reply_text("👑 **සාර්ථකයි!** මෙම Post එක VIP Channel එකට Ad-Free buttons සමඟ Publish කරන ලදී.")
-            print(f"🚀 Published to VIP Channel via Bot API: Msg ID {msg_id}")
+            print(f"🚀 Published to VIP Channel: Msg ID {msg_id}")
         else:
             err_desc = res.get("description", "Unknown error")
             await message.reply_text(f"❌ Telegram API Error: {err_desc}")
-            print(f"❌ Telegram API Error: {res}")
 
     except Exception as vip_err:
         await message.reply_text(f"❌ Error: {vip_err}")
 
 # =========================================================
-# 5. BOT COMMANDS & PAYMENTS
+# 5. BOT COMMANDS & PAYMENTS (DIRECT API FILE DELIVERY)
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -565,10 +582,14 @@ async def handle_start(client: Client, message: Message):
     text = message.text
     param = text.split()[1] if len(text.split()) > 1 else ""
 
+    # VIP Direct File Download (Direct Bot API call - 0% Peer Error)
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
-        await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+        res = await send_tg_api_copy(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+        if not res.get("ok"):
+            print(f"⚠️ Bot API copy fallback: {res}")
+            await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         return
 
     if not await check_user_access(client, message.from_user.id):
@@ -690,7 +711,7 @@ async def payment_success(client: Client, message: Message):
     if payload.startswith("single_"):
         msg_id = int(payload.split("_")[1])
         await message.reply_text("🎉 **ගෙවීම සාර්ථකයි!** මෙන්න Movie එක:")
-        await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+        await send_tg_api_copy(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
 
     elif payload == "vip_sub":
         user_id = message.from_user.id
@@ -714,12 +735,20 @@ async def payment_success(client: Client, message: Message):
             await message.reply_text("VIP Access සක්‍රිය විය! කරුණාකර Admin අමතන්න.")
 
 # =========================================================
-# 6. SERVER STARTUP & KEEP-ALIVE
+# 6. SERVER STARTUP & KEEP-ALIVE (STORAGE PEER CACHE)
 # =========================================================
 async def main():
     await app.start()
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
+
+    # Auto-resolve Storage Channel Peer on startup using Invite Link
+    if STORAGE_INVITE_LINK:
+        try:
+            storage_chat = await app.get_chat(STORAGE_INVITE_LINK)
+            print(f"🎉 Storage Channel Peer Auto-Cached: {storage_chat.title} ({storage_chat.id})")
+        except Exception as st_err:
+            print(f"⚠️ Storage Link resolve error: {st_err}")
 
     asyncio.create_task(vip_expiry_checker())
 
