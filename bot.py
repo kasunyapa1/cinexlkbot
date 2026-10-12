@@ -34,9 +34,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "")
 
 STORAGE_CHANNEL = parse_chat_target(os.environ.get("STORAGE_CHANNEL", "0"))
-VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "0"))
+VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
 MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
-BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "0"))
+BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
@@ -323,7 +323,7 @@ async def stream_media(request):
     return response
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL ONLY
+# 2. AUTO-POST TO MAIN CHANNEL
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -407,7 +407,6 @@ async def handle_storage_upload(client: Client, message: Message):
             f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
         )
 
-    # Post to MAIN CHANNEL
     if MAIN_CHANNEL:
         posted = False
         if poster_bytes:
@@ -462,16 +461,27 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER (MANUAL SHARE FEATURE)
+# 4. FORWARD-TO-VIP CONVERTER & PEER AUTO-REGISTER
 # =========================================================
 
-# Main channel එකේ post එක Bot ට forward කළ විට එය VIP Post එකක් බවට හරවා VIP channel එකට යැවීම
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
-    # Caption එකෙන් හෝ Text එකෙන් message_id එක හෝ links Extract කරගැනීම
+    # 1. VIP Channel එකෙන් ආපු Forward එකක් නම් (Peer Registration)
+    fwd_chat = message.forward_from_chat
+    if fwd_chat and fwd_chat.id == VIP_CHANNEL:
+        try:
+            # Force Telegram to register the channel peer hash inside the running session
+            await client.get_chat(fwd_chat.id)
+            await message.reply_text(f"🎉 **VIP Channel Peer සාර්ථකව Cache විය!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Main Channel එකේ Post එකක් forward කර බලන්න.")
+            print(f"✅ VIP Peer cached successfully: {fwd_chat.title} ({fwd_chat.id})")
+            return
+        except Exception as e:
+            await message.reply_text(f"⚠️ Peer register error: {e}")
+            return
+
+    # 2. Main Channel එකෙන් ආපු Forward එකක් නම් (Post to VIP)
     target_text = message.caption or message.text or ""
     
-    # Message එකේ තියෙන buttons වලින් msg_id එක හොයාගැනීම
     msg_id = None
     if message.reply_markup and message.reply_markup.inline_keyboard:
         for row in message.reply_markup.inline_keyboard:
@@ -489,7 +499,6 @@ async def manual_share_to_vip(client: Client, message: Message):
             if msg_id:
                 break
 
-    # Buttons වලින් හමු නොවූයේ නම් database එකෙන් movie name එකෙන් සෙවීම
     if not msg_id and target_text:
         first_line = target_text.split("\n")[0].replace("🎬", "").strip()
         first_line_clean = re.sub(r"\(\d{4}\)", "", first_line).strip()
@@ -498,10 +507,9 @@ async def manual_share_to_vip(client: Client, message: Message):
             msg_id = str(db_doc.get("message_id"))
 
     if not msg_id:
-        # සාමාන්‍ය Forward එකක් නම් Ignore කිරීම
         return
 
-    # VIP Buttons සකස් කිරීම (No Ads, No Stars, No Buy VIP buttons)
+    # Clean VIP Buttons
     vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
     vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
 
@@ -511,19 +519,16 @@ async def manual_share_to_vip(client: Client, message: Message):
     ]
     vip_markup = InlineKeyboardMarkup(vip_buttons)
 
-    # VIP Channel එකට Post කිරීම
+    # VIP Channel එකට Publish කිරීම
     try:
         if message.photo:
-            # Photo post එකක් නම් photo එක සහ caption එක සමඟ යැවීම
-            photo_id = message.photo.file_id
             await client.send_photo(
                 chat_id=VIP_CHANNEL,
-                photo=photo_id,
+                photo=message.photo.file_id,
                 caption=target_text,
                 reply_markup=vip_markup
             )
         else:
-            # Text post එකක් නම්
             await client.send_message(
                 chat_id=VIP_CHANNEL,
                 text=target_text,
@@ -545,14 +550,12 @@ async def handle_start(client: Client, message: Message):
     text = message.text
     param = text.split()[1] if len(text.split()) > 1 else ""
 
-    # VIP Access (No Verification Needed)
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
         await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         return
 
-    # Check 1-Time Verification for First-Time Users
     if not await check_user_access(client, message.from_user.id):
         markup = await get_backup_button(client, param)
         await message.reply_text(
@@ -563,7 +566,6 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # Once verified, process their action
     if param:
         if param.startswith("getfile_"):
             msg_id = int(param.split("_")[1])
