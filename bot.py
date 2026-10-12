@@ -17,9 +17,9 @@ from aiohttp import web
 def parse_chat_target(val: str):
     if not val:
         return 0
-    val = val.strip()
-    if val.startswith("@") or not val.lstrip("-").isdigit():
-        return val if val.startswith("@") else f"@{val}"
+    val = str(val).strip()
+    if val.startswith("@"):
+        return val
     try:
         return int(val)
     except ValueError:
@@ -41,7 +41,7 @@ BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
 
-BASE_URL = os.environ.get("BASE_URL", "")
+BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 MONETAG_STREAM_LINK = os.environ.get("MONETAG_STREAM_LINK", "")
 ADSTERRA_DIRECT_LINK = os.environ.get("ADSTERRA_DIRECT_LINK", "")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -53,18 +53,21 @@ vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    data = {
-        "chat_id": chat_id,
-        "title": title,
-        "description": description,
-        "payload": payload,
-        "currency": "XTR",
-        "prices": [{"label": title, "amount": stars}]
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=data) as resp:
-            return await resp.json()
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+        data = {
+            "chat_id": chat_id,
+            "title": title,
+            "description": description,
+            "payload": payload,
+            "currency": "XTR",
+            "prices": [{"label": title, "amount": stars}]
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=data) as resp:
+                return await resp.json()
+    except Exception as e:
+        print(f"⚠️ Stars Invoice Error: {e}")
 
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
@@ -72,14 +75,14 @@ payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_pay
 # ONE-TIME BACKUP VERIFICATION HELPER
 # =========================================================
 async def check_user_access(client: Client, user_id: int) -> bool:
-    user_record = await bot_users_col.find_one({"user_id": user_id})
-    if user_record and user_record.get("fsub_verified"):
-        return True
-
-    if not BACKUP_CHANNEL:
-        return True
-
     try:
+        user_record = await bot_users_col.find_one({"user_id": user_id})
+        if user_record and user_record.get("fsub_verified"):
+            return True
+
+        if not BACKUP_CHANNEL:
+            return True
+
         member = await client.get_chat_member(BACKUP_CHANNEL, user_id)
         if member.status not in ["kicked", "left"]:
             await bot_users_col.update_one(
@@ -89,8 +92,7 @@ async def check_user_access(client: Client, user_id: int) -> bool:
             )
             return True
     except Exception:
-        return False
-
+        pass
     return False
 
 async def get_backup_button(client: Client, start_param: str = "") -> InlineKeyboardMarkup:
@@ -98,7 +100,7 @@ async def get_backup_button(client: Client, start_param: str = "") -> InlineKeyb
     if BACKUP_CHANNEL:
         try:
             chat = await client.get_chat(BACKUP_CHANNEL)
-            url = f"https://t.me/{chat.username}" if chat.username else (await client.export_chat_invite_link(BACKUP_CHANNEL))
+            url = f"https://t.me/{chat.username}" if getattr(chat, 'username', None) else (await client.export_chat_invite_link(BACKUP_CHANNEL))
             buttons.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=url)])
         except Exception:
             pass
@@ -146,17 +148,17 @@ async def fetch_imdb_data(filename: str):
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 data = await resp.json()
                 if data.get("Response") == "True":
                     return data
                 fallback_url = f"https://www.omdbapi.com/?t={title}&apikey={OMDB_API_KEY}"
-                async with session.get(fallback_url) as fb_resp:
+                async with session.get(fallback_url, timeout=aiohttp.ClientTimeout(total=5)) as fb_resp:
                     fb_data = await fb_resp.json()
                     if fb_data.get("Response") == "True":
                         return fb_data
     except Exception as e:
-        print(f"⚠️ OMDb Error: {e}")
+        print(f"⚠️ OMDb Request Error: {e}")
     return None
 
 # =========================================================
@@ -305,126 +307,133 @@ async def download_page(request):
 
 @routes.get("/stream/{msg_id}")
 async def stream_media(request):
-    msg_id = int(request.match_info['msg_id'])
-    msg = await app.get_messages(STORAGE_CHANNEL, msg_id)
-    media = msg.document or msg.video
-    response = web.StreamResponse(
-        status=200,
-        headers={
-            'Content-Type': media.mime_type or 'video/mp4',
-            'Content-Length': str(media.file_size),
-            'Content-Disposition': f'attachment; filename="{media.file_name or "movie.mp4"}"',
-            'Accept-Ranges': 'bytes'
-        }
-    )
-    await response.prepare(request)
-    async for chunk in app.stream_media(msg, limit=0):
-        await response.write(chunk)
-    return response
+    try:
+        msg_id = int(request.match_info['msg_id'])
+        msg = await app.get_messages(STORAGE_CHANNEL, msg_id)
+        media = msg.document or msg.video
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                'Content-Type': media.mime_type or 'video/mp4',
+                'Content-Length': str(media.file_size),
+                'Content-Disposition': f'attachment; filename="{media.file_name or "movie.mp4"}"',
+                'Accept-Ranges': 'bytes'
+            }
+        )
+        await response.prepare(request)
+        async for chunk in app.stream_media(msg, limit=0):
+            await response.write(chunk)
+        return response
+    except Exception as e:
+        return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL (NO FREE TELEGRAM FILES)
+# 2. AUTO-POST TO MAIN CHANNEL (CRASH-PROOF)
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
 async def handle_storage_upload(client: Client, message: Message):
-    if message.chat.id != STORAGE_CHANNEL:
-        return
-
-    media = message.document or message.video
-    if not media:
-        return
-
-    file_name = media.file_name or "Unknown Movie"
-    size_mb = round(media.file_size / (1024 * 1024), 2)
-    msg_id = message.id
-
-    print(f"\n📥 [Storage Channel] New File Uploaded: {file_name} (Msg ID: {msg_id})")
-
     try:
-        await files_col.update_one(
-            {"file_name": file_name},
-            {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id}},
-            upsert=True
-        )
-    except Exception as db_err:
-        print(f"❌ DB Error: {db_err}")
+        # Chat ID matching (Check both int and raw equality)
+        if str(message.chat.id) != str(STORAGE_CHANNEL):
+            return
 
-    imdb = await fetch_imdb_data(file_name)
+        media = message.document or message.video
+        if not media:
+            return
 
-    # Main Channel Buttons (Clean & Monetized)
-    main_watch_url = f"{BASE_URL}/watch/{msg_id}"
-    main_dl_url = f"{BASE_URL}/download/{msg_id}"
-    buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
-    vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+        file_name = media.file_name or "Unknown Movie"
+        size_mb = round(media.file_size / (1024 * 1024), 2)
+        msg_id = message.id
 
-    main_buttons = [
-        [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
-        [InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url)],
-        [
-            InlineKeyboardButton("⚡ Instant (5 ⭐️)", url=buy_stars_url),
-            InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)
+        print(f"\n📥 [Storage Channel] New File Uploaded: {file_name} (Msg ID: {msg_id})")
+
+        try:
+            await files_col.update_one(
+                {"file_name": file_name},
+                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id}},
+                upsert=True
+            )
+        except Exception as db_err:
+            print(f"❌ DB Error: {db_err}")
+
+        imdb = await fetch_imdb_data(file_name)
+
+        main_watch_url = f"{BASE_URL}/watch/{msg_id}"
+        main_dl_url = f"{BASE_URL}/download/{msg_id}"
+        buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
+        vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+
+        main_buttons = [
+            [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
+            [InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url)],
+            [
+                InlineKeyboardButton("⚡ Instant (5 ⭐️)", url=buy_stars_url),
+                InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)
+            ]
         ]
-    ]
-    main_markup = InlineKeyboardMarkup(main_buttons)
+        main_markup = InlineKeyboardMarkup(main_buttons)
 
-    poster_bytes = None
-    if imdb and imdb.get("Response") == "True":
-        title = f"{imdb.get('Title')} ({imdb.get('Year')})"
-        rating = imdb.get('imdbRating', 'N/A')
-        genre = imdb.get('Genre', 'N/A')
-        language = get_clean_language(imdb.get('Language', ''), file_name)
-        plot = imdb.get('Plot', 'No description available.')
-        raw_poster = imdb.get("Poster")
+        poster_bytes = None
+        if imdb and imdb.get("Response") == "True":
+            title = f"{imdb.get('Title')} ({imdb.get('Year')})"
+            rating = imdb.get('imdbRating', 'N/A')
+            genre = imdb.get('Genre', 'N/A')
+            language = get_clean_language(imdb.get('Language', ''), file_name)
+            plot = imdb.get('Plot', 'No description available.')
+            raw_poster = imdb.get("Poster")
 
-        caption = (
-            f"🎬 **{title}**\n\n"
-            f"⭐ **IMDb Rating:** `{rating}/10`\n"
-            f"🎭 **Genre:** `{genre}`\n"
-            f"🗣️ **Language:** `{language}`\n"
-            f"📦 **Size:** `{size_mb} MB`\n\n"
-            f"📖 **Story:** {plot[:250]}...\n\n"
-            f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
-        )
+            caption = (
+                f"🎬 **{title}**\n\n"
+                f"⭐ **IMDb Rating:** `{rating}/10`\n"
+                f"🎭 **Genre:** `{genre}`\n"
+                f"🗣️ **Language:** `{language}`\n"
+                f"📦 **Size:** `{size_mb} MB`\n\n"
+                f"📖 **Story:** {plot[:250]}...\n\n"
+                f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
+            )
 
-        if raw_poster and raw_poster != "N/A":
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(raw_poster) as img_resp:
-                        if img_resp.status == 200:
-                            poster_bytes = await img_resp.read()
-            except Exception as dl_err:
-                print(f"⚠️ Poster download error: {dl_err}")
-    else:
-        language = get_clean_language("", file_name)
-        caption = (
-            f"🎬 **{file_name}**\n\n"
-            f"🗣️ **Language:** `{language}`\n"
-            f"📦 **Size:** `{size_mb} MB`\n\n"
-            f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
-        )
+            if raw_poster and raw_poster != "N/A":
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(raw_poster, timeout=aiohttp.ClientTimeout(total=5)) as img_resp:
+                            if img_resp.status == 200:
+                                poster_bytes = await img_resp.read()
+                except Exception as dl_err:
+                    print(f"⚠️ Poster download error: {dl_err}")
+        else:
+            language = get_clean_language("", file_name)
+            caption = (
+                f"🎬 **{file_name}**\n\n"
+                f"🗣️ **Language:** `{language}`\n"
+                f"📦 **Size:** `{size_mb} MB`\n\n"
+                f"👇 **නැරඹීමට හෝ බාගත කිරීමට පහත Buttons භාවිතා කරන්න:**"
+            )
 
-    if MAIN_CHANNEL:
-        posted = False
-        if poster_bytes:
-            try:
-                photo_file = io.BytesIO(poster_bytes)
-                photo_file.name = "poster.jpg"
-                await client.send_photo(chat_id=MAIN_CHANNEL, photo=photo_file, caption=caption, reply_markup=main_markup)
-                print(f"🚀 Photo Post published to Main Channel: {MAIN_CHANNEL}")
-                posted = True
-            except Exception as p_err:
-                print(f"⚠️ Photo Post failed for Main: {p_err}. Trying text fallback...")
+        if MAIN_CHANNEL:
+            posted = False
+            if poster_bytes:
+                try:
+                    photo_file = io.BytesIO(poster_bytes)
+                    photo_file.name = "poster.jpg"
+                    await client.send_photo(chat_id=MAIN_CHANNEL, photo=photo_file, caption=caption, reply_markup=main_markup)
+                    print(f"🚀 Photo Post published to Main Channel: {MAIN_CHANNEL}")
+                    posted = True
+                except Exception as p_err:
+                    print(f"⚠️ Photo Post failed for Main: {p_err}. Trying text fallback...")
 
-        if not posted:
-            try:
-                await client.send_message(chat_id=MAIN_CHANNEL, text=caption, reply_markup=main_markup)
-                print(f"🚀 Text Post published to Main Channel: {MAIN_CHANNEL}")
-            except Exception as t_err:
-                print(f"❌ Text post also failed for Main: {t_err}")
+            if not posted:
+                try:
+                    await client.send_message(chat_id=MAIN_CHANNEL, text=caption, reply_markup=main_markup)
+                    print(f"🚀 Text Post published to Main Channel: {MAIN_CHANNEL}")
+                except Exception as t_err:
+                    print(f"❌ Text post also failed for Main: {t_err}")
+
+    except Exception as general_err:
+        print(f"❌ Storage Handler Crash Prevented: {general_err}")
 
 # =========================================================
-# 3. AUTO-KICK EXPIRED VIP USERS (30 DAYS CHECKER)
+# 3. AUTO-KICK EXPIRED VIP USERS
 # =========================================================
 async def vip_expiry_checker():
     while True:
@@ -463,59 +472,55 @@ async def vip_expiry_checker():
 
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
-    # 1. VIP Channel එකෙන් ආපු Forward එකක් නම් (Peer Registration)
-    fwd_chat = message.forward_from_chat
-    if fwd_chat and fwd_chat.id == VIP_CHANNEL:
-        try:
-            await client.get_chat(fwd_chat.id)
-            await message.reply_text(f"🎉 **VIP Channel Peer සාර්ථකව Cache විය!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Main Channel එකේ Post එකක් forward කර බලන්න.")
-            print(f"✅ VIP Peer cached successfully: {fwd_chat.title} ({fwd_chat.id})")
-            return
-        except Exception as e:
-            await message.reply_text(f"⚠️ Peer register error: {e}")
-            return
-
-    # 2. Main Channel එකෙන් ආපු Forward එකක් නම් (Post to VIP)
-    target_text = message.caption or message.text or ""
-    
-    msg_id = None
-    if message.reply_markup and message.reply_markup.inline_keyboard:
-        for row in message.reply_markup.inline_keyboard:
-            for btn in row:
-                if btn.url and "/watch/" in btn.url:
-                    match = re.search(r"/watch/(\d+)", btn.url)
-                    if match:
-                        msg_id = match.group(1)
-                        break
-                elif btn.url and "/download/" in btn.url:
-                    match = re.search(r"/download/(\d+)", btn.url)
-                    if match:
-                        msg_id = match.group(1)
-                        break
-            if msg_id:
-                break
-
-    if not msg_id and target_text:
-        first_line = target_text.split("\n")[0].replace("🎬", "").strip()
-        first_line_clean = re.sub(r"\(\d{4}\)", "", first_line).strip()
-        db_doc = await files_col.find_one({"file_name": {"$regex": re.escape(first_line_clean), "$options": "i"}})
-        if db_doc:
-            msg_id = str(db_doc.get("message_id"))
-
-    if not msg_id:
-        return
-
-    # Clean VIP Buttons (No Ads)
-    vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
-    vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
-
-    vip_buttons = [
-        [InlineKeyboardButton("🌐 Watch Online (No Ads)", url=vip_watch_url)],
-        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_file_url)]
-    ]
-    vip_markup = InlineKeyboardMarkup(vip_buttons)
-
     try:
+        fwd_chat = message.forward_from_chat
+        if fwd_chat and str(fwd_chat.id) == str(VIP_CHANNEL):
+            try:
+                await client.get_chat(fwd_chat.id)
+                await message.reply_text(f"🎉 **VIP Channel Peer සාර්ථකව Cache විය!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`")
+                print(f"✅ VIP Peer cached: {fwd_chat.title}")
+                return
+            except Exception as e:
+                await message.reply_text(f"⚠️ Peer register error: {e}")
+                return
+
+        target_text = message.caption or message.text or ""
+        msg_id = None
+        if message.reply_markup and message.reply_markup.inline_keyboard:
+            for row in message.reply_markup.inline_keyboard:
+                for btn in row:
+                    if btn.url and "/watch/" in btn.url:
+                        match = re.search(r"/watch/(\d+)", btn.url)
+                        if match:
+                            msg_id = match.group(1)
+                            break
+                    elif btn.url and "/download/" in btn.url:
+                        match = re.search(r"/download/(\d+)", btn.url)
+                        if match:
+                            msg_id = match.group(1)
+                            break
+                if msg_id:
+                    break
+
+        if not msg_id and target_text:
+            first_line = target_text.split("\n")[0].replace("🎬", "").strip()
+            first_line_clean = re.sub(r"\(\d{4}\)", "", first_line).strip()
+            db_doc = await files_col.find_one({"file_name": {"$regex": re.escape(first_line_clean), "$options": "i"}})
+            if db_doc:
+                msg_id = str(db_doc.get("message_id"))
+
+        if not msg_id:
+            return
+
+        vip_watch_url = f"{BASE_URL}/watch/{msg_id}?vip=1"
+        vip_direct_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
+
+        vip_buttons = [
+            [InlineKeyboardButton("🌐 Watch Online (No Ads)", url=vip_watch_url)],
+            [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_file_url)]
+        ]
+        vip_markup = InlineKeyboardMarkup(vip_buttons)
+
         if message.photo:
             await client.send_photo(
                 chat_id=VIP_CHANNEL,
@@ -534,10 +539,9 @@ async def manual_share_to_vip(client: Client, message: Message):
         print(f"🚀 Manually converted & posted to VIP Channel: Msg ID {msg_id}")
     except Exception as vip_err:
         await message.reply_text(f"❌ VIP එකට යැවීමට නොහැකි විය: {vip_err}")
-        print(f"❌ Manual VIP posting error: {vip_err}")
 
 # =========================================================
-# 5. BOT COMMANDS & STARS PAYMENTS
+# 5. BOT COMMANDS & PAYMENTS
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -545,14 +549,12 @@ async def handle_start(client: Client, message: Message):
     text = message.text
     param = text.split()[1] if len(text.split()) > 1 else ""
 
-    # VIP Direct Access
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
         await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         return
 
-    # 1-Time Verification for regular users
     if not await check_user_access(client, message.from_user.id):
         markup = await get_backup_button(client, param)
         await message.reply_text(
