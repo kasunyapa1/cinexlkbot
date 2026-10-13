@@ -38,6 +38,10 @@ VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
 MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
 BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
 
+# Dynamic Star Prices (Render Environment Variables)
+VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "150"))
+SINGLE_STAR_PRICE = int(os.environ.get("SINGLE_STAR_PRICE", "5"))
+
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
 
@@ -61,7 +65,7 @@ vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
 # =========================================================
-# 0. DIRECT BOT API REQUESTS (ZERO PEER DEPENDENCY)
+# 0. DIRECT TELEGRAM BOT API CALLS (BULLETPROOF)
 # =========================================================
 async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
     try:
@@ -105,6 +109,30 @@ async def send_tg_api_copy(chat_id, from_chat_id, message_id):
         print(f"⚠️ Direct Bot API Copy Error: {e}")
         return {"ok": False, "description": str(e)}
 
+async def get_tg_api_chat_member(chat_id, user_id):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+        payload = {"chat_id": chat_id, "user_id": user_id}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                return await resp.json()
+    except Exception as e:
+        print(f"⚠️ getChatMember Error: {e}")
+        return {"ok": False}
+
+async def get_tg_api_invite_link(chat_id):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/exportChatInviteLink"
+        payload = {"chat_id": chat_id}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return data.get("result")
+    except Exception as e:
+        print(f"⚠️ exportChatInviteLink Error: {e}")
+    return None
+
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -125,7 +153,7 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# ONE-TIME BACKUP VERIFICATION HELPER
+# ONE-TIME BACKUP VERIFICATION HELPER (DIRECT API CHECK)
 # =========================================================
 async def check_user_access(client: Client, user_id: int) -> bool:
     try:
@@ -136,27 +164,32 @@ async def check_user_access(client: Client, user_id: int) -> bool:
         if not BACKUP_CHANNEL:
             return True
 
-        member = await client.get_chat_member(BACKUP_CHANNEL, user_id)
-        if member.status not in ["kicked", "left"]:
-            await bot_users_col.update_one(
-                {"user_id": user_id},
-                {"$set": {"user_id": user_id, "fsub_verified": True, "verified_at": datetime.utcnow()}},
-                upsert=True
-            )
-            return True
-    except Exception:
-        pass
+        # Check membership using Direct Bot API
+        res = await get_tg_api_chat_member(BACKUP_CHANNEL, user_id)
+        if res.get("ok"):
+            status = res.get("result", {}).get("status", "")
+            if status in ["member", "administrator", "creator", "restricted"]:
+                await bot_users_col.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"user_id": user_id, "fsub_verified": True, "verified_at": datetime.utcnow()}},
+                    upsert=True
+                )
+                return True
+    except Exception as e:
+        print(f"⚠️ User check error: {e}")
     return False
 
 async def get_backup_button(client: Client, start_param: str = "") -> InlineKeyboardMarkup:
     buttons = []
     if BACKUP_CHANNEL:
-        try:
-            chat = await client.get_chat(BACKUP_CHANNEL)
-            url = f"https://t.me/{chat.username}" if getattr(chat, 'username', None) else (await client.export_chat_invite_link(BACKUP_CHANNEL))
+        url = None
+        if isinstance(BACKUP_CHANNEL, str) and BACKUP_CHANNEL.startswith("@"):
+            url = f"https://t.me/{BACKUP_CHANNEL.replace('@', '')}"
+        else:
+            url = await get_tg_api_invite_link(BACKUP_CHANNEL)
+
+        if url:
             buttons.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=url)])
-        except Exception:
-            pass
 
     try_url = f"https://t.me/{BOT_USERNAME}?start={start_param}" if start_param else f"https://t.me/{BOT_USERNAME}?start"
     buttons.append([InlineKeyboardButton("🔄 Verify & Continue", url=try_url)])
@@ -431,7 +464,7 @@ async def handle_storage_upload(client: Client, message: Message):
             [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url)],
             [
-                InlineKeyboardButton("⚡ Instant (5 ⭐️)", url=buy_stars_url),
+                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=buy_stars_url),
                 InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)
             ]
         ]
@@ -627,6 +660,7 @@ async def handle_start(client: Client, message: Message):
                 await message.reply_text(f"⚠️ File එක ලබාදීමට නොහැකි විය: {copy_err}")
         return
 
+    # Check Backup Channel access for all other actions
     if not await check_user_access(client, message.from_user.id):
         markup = await get_backup_button(client, param)
         await message.reply_text(
@@ -645,7 +679,7 @@ async def handle_start(client: Client, message: Message):
                 title="Direct Movie File",
                 description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
                 payload=f"single_{msg_id}",
-                stars=5
+                stars=SINGLE_STAR_PRICE
             )
             return
 
@@ -653,9 +687,9 @@ async def handle_start(client: Client, message: Message):
             await send_stars_invoice(
                 chat_id=message.chat.id,
                 title="VIP Membership (30 Days)",
-                description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
+                description=f"Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
                 payload="vip_sub",
-                stars=150
+                stars=VIP_STAR_PRICE
             )
             return
 
@@ -703,7 +737,7 @@ async def handle_search(client: Client, message: Message):
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=dl_url)],
             [
-                InlineKeyboardButton("⚡ Instant (5 ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}"),
+                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", callback_data=f"buy_single_{msg_id}"),
                 InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")
             ]
         ]
@@ -718,7 +752,7 @@ async def pay_single(client: Client, callback: CallbackQuery):
         title="Direct Movie File",
         description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
         payload=f"single_{msg_id}",
-        stars=5
+        stars=SINGLE_STAR_PRICE
     )
 
 @app.on_callback_query(filters.regex(r"^buy_vip_pass$"))
@@ -729,7 +763,7 @@ async def pay_vip(client: Client, callback: CallbackQuery):
         title="VIP Membership (30 Days)",
         description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
         payload="vip_sub",
-        stars=150
+        stars=VIP_STAR_PRICE
     )
 
 @app.on_raw_update()
@@ -784,7 +818,6 @@ async def keep_alive_self_ping():
         except Exception as ping_err:
             print(f"⚠️ Keep-Alive Ping Warning: {ping_err}")
 
-        # Every 4 minutes (Render sleeps at 15 minutes, so 4 minutes guarantees 24/7 online)
         await asyncio.sleep(240)
 
 # =========================================================
