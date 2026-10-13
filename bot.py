@@ -11,6 +11,7 @@ from pyrogram.types import (
     Message,
     CallbackQuery
 )
+from pyrogram.errors import UserNotParticipant, ChatAdminRequired, PeerIdInvalid, RPCError
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -64,7 +65,7 @@ vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
 # =========================================================
-# DIRECT TELEGRAM BOT API CALLS
+# DIRECT TELEGRAM BOT API CALLS (FOR POSTING & COPYING)
 # =========================================================
 async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
     try:
@@ -111,33 +112,6 @@ async def send_tg_api_copy(chat_id, from_chat_id, message_id):
         print(f"⚠️ Direct Bot API Copy Error: {e}")
         return {"ok": False, "description": str(e)}
 
-async def get_tg_api_chat_member(chat_id, user_id):
-    try:
-        target = int(chat_id) if str(chat_id).lstrip("-").isdigit() else str(chat_id)
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
-        payload = {"chat_id": target, "user_id": int(user_id)}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                return data
-    except Exception as e:
-        print(f"⚠️ getChatMember Request Error for {chat_id}: {e}")
-        return {"ok": False}
-
-async def get_tg_api_invite_link(chat_id):
-    try:
-        target = int(chat_id) if str(chat_id).lstrip("-").isdigit() else str(chat_id)
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/exportChatInviteLink"
-        payload = {"chat_id": target}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    return data.get("result")
-    except Exception as e:
-        print(f"⚠️ exportChatInviteLink Error: {e}")
-    return None
-
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -158,35 +132,51 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# DUAL CHANNEL (MAIN + BACKUP) VERIFICATION SYSTEM
+# RELIABLE DUAL CHANNEL VERIFICATION SYSTEM
 # =========================================================
-async def is_user_in_channel(chat_target, user_id: int) -> bool:
+async def is_member(client: Client, chat_target, user_id: int) -> bool:
     if not chat_target:
         return True
-    res = await get_tg_api_chat_member(chat_target, user_id)
-    if res.get("ok"):
-        status = res.get("result", {}).get("status", "")
-        # Valid active statuses
-        if status in ["member", "administrator", "creator", "restricted"]:
+    try:
+        member = await client.get_chat_member(chat_target, user_id)
+        status = str(member.status).lower()
+        if any(s in status for s in ["member", "administrator", "owner", "restricted"]):
             return True
-        print(f"ℹ️ User {user_id} status in {chat_target}: {status}")
         return False
-    else:
-        print(f"⚠️ API Check Failed for channel {chat_target}: {res.get('description')}")
-        # If bot is not admin or telegram API fails, don't permanently lock user out
+    except UserNotParticipant:
         return False
+    except (ChatAdminRequired, PeerIdInvalid) as e:
+        print(f"⚠️ Channel {chat_target} permission issue ({e}), bypassing...")
+        return True
+    except RPCError as e:
+        print(f"⚠️ Pyrogram RPC Error on {chat_target}: {e}")
+        # Try raw HTTP as fallback
+        try:
+            target = int(chat_target) if str(chat_target).lstrip("-").isdigit() else str(chat_target)
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json={"chat_id": target, "user_id": user_id}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        st = data.get("result", {}).get("status", "")
+                        return st in ["member", "administrator", "creator", "restricted"]
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        print(f"⚠️ Unexpected member check error on {chat_target}: {e}")
+        return True
 
 async def check_user_access(client: Client, user_id: int) -> bool:
     try:
-        # Check DB first
         user_record = await bot_users_col.find_one({"user_id": user_id})
         if user_record and user_record.get("fsub_verified"):
             return True
 
-        in_main = await is_user_in_channel(MAIN_CHANNEL, user_id)
-        in_backup = await is_user_in_channel(BACKUP_CHANNEL, user_id)
+        in_main = await is_member(client, MAIN_CHANNEL, user_id)
+        in_backup = await is_member(client, BACKUP_CHANNEL, user_id)
 
-        print(f"🔍 Membership status for {user_id} -> Main: {in_main}, Backup: {in_backup}")
+        print(f"🔍 Access Check for {user_id} -> Main: {in_main}, Backup: {in_backup}")
 
         if in_main and in_backup:
             await bot_users_col.update_one(
@@ -195,32 +185,42 @@ async def check_user_access(client: Client, user_id: int) -> bool:
                 upsert=True
             )
             return True
+        return False
     except Exception as e:
-        print(f"⚠️ User check critical error: {e}")
-    return False
+        print(f"⚠️ check_user_access error: {e}")
+        return True
 
-async def get_dual_fsub_buttons(start_param: str = "") -> InlineKeyboardMarkup:
+async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> InlineKeyboardMarkup:
     buttons = []
     
     # 1. Main Channel Link
     if MAIN_CHANNEL:
+        main_url = None
         if isinstance(MAIN_CHANNEL, str) and MAIN_CHANNEL.startswith("@"):
             main_url = f"https://t.me/{MAIN_CHANNEL.replace('@', '')}"
         else:
-            main_url = await get_tg_api_invite_link(MAIN_CHANNEL)
+            try:
+                chat = await client.get_chat(MAIN_CHANNEL)
+                main_url = chat.invite_link or (await client.export_chat_invite_link(MAIN_CHANNEL))
+            except Exception:
+                pass
         if main_url:
             buttons.append([InlineKeyboardButton("📢 Join Main Channel", url=main_url)])
 
     # 2. Backup Channel Link
     if BACKUP_CHANNEL:
+        backup_url = None
         if isinstance(BACKUP_CHANNEL, str) and BACKUP_CHANNEL.startswith("@"):
             backup_url = f"https://t.me/{BACKUP_CHANNEL.replace('@', '')}"
         else:
-            backup_url = await get_tg_api_invite_link(BACKUP_CHANNEL)
+            try:
+                chat = await client.get_chat(BACKUP_CHANNEL)
+                backup_url = chat.invite_link or (await client.export_chat_invite_link(BACKUP_CHANNEL))
+            except Exception:
+                pass
         if backup_url:
             buttons.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=backup_url)])
 
-    # 3. Callback Button for Instant Verification (Reliable callback event)
     callback_data = f"verify_{start_param}" if start_param else "verify_root"
     buttons.append([InlineKeyboardButton("🔄 Verify & Unlock", callback_data=callback_data)])
     return InlineKeyboardMarkup(buttons)
@@ -491,7 +491,6 @@ async def handle_storage_upload(client: Client, message: Message):
 
         imdb = await fetch_imdb_data(file_name)
 
-        # Route EVERY action via Bot to force First-Time verification
         watch_bot_url = f"https://t.me/{BOT_USERNAME}?start=watch_{msg_id}"
         dl_bot_url = f"https://t.me/{BOT_USERNAME}?start=dl_{msg_id}"
         buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
@@ -667,7 +666,6 @@ async def manual_share_to_vip(client: Client, message: Message):
 # 5. BOT COMMANDS & CALLBACK HANDLERS
 # =========================================================
 
-# Instant Callback Verification Button
 @app.on_callback_query(filters.regex(r"^verify_"))
 async def callback_verify_handler(client: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -682,7 +680,6 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
         except Exception:
             pass
 
-        # Execute the action immediately
         if param.startswith("watch_"):
             msg_id = param.split("_")[1]
             watch_url = f"{BASE_URL}/watch/{msg_id}"
@@ -726,7 +723,6 @@ async def handle_start(client: Client, message: Message):
     text = message.text
     param = text.split()[1] if len(text.split()) > 1 else ""
 
-    # VIP Direct File Download (Direct Bot API call - No verification needed for paid VIPs)
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
@@ -738,9 +734,8 @@ async def handle_start(client: Client, message: Message):
                 await message.reply_text(f"⚠️ File එක ලබාදීමට නොහැකි විය: {copy_err}")
         return
 
-    # Check Dual Channel (Main + Backup) access for EVERY action
     if not await check_user_access(client, message.from_user.id):
-        markup = await get_dual_fsub_buttons(param)
+        markup = await get_dual_fsub_buttons(client, param)
         await message.reply_text(
             "🔒 **ප්‍රවේශය සත්‍යාපනය කර නොමැත! (Channel Verification)**\n\n"
             "චිත්‍රපට නැරඹීමට, බාගත කිරීමට, හෝ VIP ලබා ගැනීමට ප්‍රථමයෙන් පහත **Main Channel** සහ **Backup Channel** යන දෙකටම Join වන්න.\n"
@@ -749,7 +744,6 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # Once verified, unlock the requested content
     if param:
         if param.startswith("watch_"):
             msg_id = param.split("_")[1]
@@ -795,7 +789,7 @@ async def handle_start(client: Client, message: Message):
 @app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help"]))
 async def handle_search(client: Client, message: Message):
     if not await check_user_access(client, message.from_user.id):
-        markup = await get_dual_fsub_buttons()
+        markup = await get_dual_fsub_buttons(client)
         await message.reply_text(
             "🔒 **චිත්‍රපට සෙවීමට පෙර අපගේ Channels වලට එක්වන්න:**",
             reply_markup=markup
