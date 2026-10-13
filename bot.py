@@ -38,7 +38,6 @@ VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
 MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
 BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
 
-# Dynamic Star Prices (Render Environment Variables)
 VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "150"))
 SINGLE_STAR_PRICE = int(os.environ.get("SINGLE_STAR_PRICE", "5"))
 
@@ -65,7 +64,7 @@ vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 
 # =========================================================
-# 0. DIRECT TELEGRAM BOT API CALLS (BULLETPROOF)
+# DIRECT TELEGRAM BOT API CALLS
 # =========================================================
 async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
     try:
@@ -153,46 +152,60 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# ONE-TIME BACKUP VERIFICATION HELPER (DIRECT API CHECK)
+# DUAL CHANNEL (MAIN + BACKUP) VERIFICATION SYSTEM
 # =========================================================
+async def is_user_in_channel(chat_target, user_id: int) -> bool:
+    if not chat_target:
+        return True
+    res = await get_tg_api_chat_member(chat_target, user_id)
+    if res.get("ok"):
+        status = res.get("result", {}).get("status", "")
+        return status in ["member", "administrator", "creator", "restricted"]
+    return False
+
 async def check_user_access(client: Client, user_id: int) -> bool:
     try:
         user_record = await bot_users_col.find_one({"user_id": user_id})
         if user_record and user_record.get("fsub_verified"):
             return True
 
-        if not BACKUP_CHANNEL:
-            return True
+        in_main = await is_user_in_channel(MAIN_CHANNEL, user_id)
+        in_backup = await is_user_in_channel(BACKUP_CHANNEL, user_id)
 
-        # Check membership using Direct Bot API
-        res = await get_tg_api_chat_member(BACKUP_CHANNEL, user_id)
-        if res.get("ok"):
-            status = res.get("result", {}).get("status", "")
-            if status in ["member", "administrator", "creator", "restricted"]:
-                await bot_users_col.update_one(
-                    {"user_id": user_id},
-                    {"$set": {"user_id": user_id, "fsub_verified": True, "verified_at": datetime.utcnow()}},
-                    upsert=True
-                )
-                return True
+        if in_main and in_backup:
+            await bot_users_col.update_one(
+                {"user_id": user_id},
+                {"$set": {"user_id": user_id, "fsub_verified": True, "verified_at": datetime.utcnow()}},
+                upsert=True
+            )
+            return True
     except Exception as e:
         print(f"⚠️ User check error: {e}")
     return False
 
-async def get_backup_button(client: Client, start_param: str = "") -> InlineKeyboardMarkup:
+async def get_dual_fsub_buttons(start_param: str = "") -> InlineKeyboardMarkup:
     buttons = []
-    if BACKUP_CHANNEL:
-        url = None
-        if isinstance(BACKUP_CHANNEL, str) and BACKUP_CHANNEL.startswith("@"):
-            url = f"https://t.me/{BACKUP_CHANNEL.replace('@', '')}"
+    
+    # 1. Main Channel Button
+    if MAIN_CHANNEL:
+        if isinstance(MAIN_CHANNEL, str) and MAIN_CHANNEL.startswith("@"):
+            main_url = f"https://t.me/{MAIN_CHANNEL.replace('@', '')}"
         else:
-            url = await get_tg_api_invite_link(BACKUP_CHANNEL)
+            main_url = await get_tg_api_invite_link(MAIN_CHANNEL)
+        if main_url:
+            buttons.append([InlineKeyboardButton("📢 Join Main Channel", url=main_url)])
 
-        if url:
-            buttons.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=url)])
+    # 2. Backup Channel Button
+    if BACKUP_CHANNEL:
+        if isinstance(BACKUP_CHANNEL, str) and BACKUP_CHANNEL.startswith("@"):
+            backup_url = f"https://t.me/{BACKUP_CHANNEL.replace('@', '')}"
+        else:
+            backup_url = await get_tg_api_invite_link(BACKUP_CHANNEL)
+        if backup_url:
+            buttons.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=backup_url)])
 
     try_url = f"https://t.me/{BOT_USERNAME}?start={start_param}" if start_param else f"https://t.me/{BOT_USERNAME}?start"
-    buttons.append([InlineKeyboardButton("🔄 Verify & Continue", url=try_url)])
+    buttons.append([InlineKeyboardButton("🔄 Verify & Unlock", url=try_url)])
     return InlineKeyboardMarkup(buttons)
 
 # =========================================================
@@ -399,13 +412,20 @@ async def download_page(request):
 async def stream_media(request):
     try:
         msg_id = int(request.match_info['msg_id'])
-        msg = await app.get_messages(STORAGE_CHANNEL, msg_id)
+        
+        # Ensure peer resolution before fetching messages
+        try:
+            target_peer = await app.resolve_peer(STORAGE_CHANNEL)
+        except Exception:
+            target_peer = STORAGE_CHANNEL
+
+        msg = await app.get_messages(target_peer, msg_id)
         if not msg:
-            return web.Response(text="File message not found in storage.", status=404)
+            return web.Response(text="File message not found in storage channel.", status=404)
 
         media = msg.document or msg.video
         if not media:
-            return web.Response(text="No media found.", status=404)
+            return web.Response(text="No media found in the specified message.", status=404)
 
         response = web.StreamResponse(
             status=200,
@@ -425,7 +445,7 @@ async def stream_media(request):
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL
+# 2. AUTO-POST TO MAIN CHANNEL (MONETIZED ROUTING)
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -455,14 +475,15 @@ async def handle_storage_upload(client: Client, message: Message):
 
         imdb = await fetch_imdb_data(file_name)
 
-        main_watch_url = f"{BASE_URL}/watch/{msg_id}"
-        main_dl_url = f"{BASE_URL}/download/{msg_id}"
+        # Route EVERY action via Bot to force First-Time verification
+        watch_bot_url = f"https://t.me/{BOT_USERNAME}?start=watch_{msg_id}"
+        dl_bot_url = f"https://t.me/{BOT_USERNAME}?start=dl_{msg_id}"
         buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
         vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
         main_buttons = [
-            [InlineKeyboardButton("🌐 Watch Online", url=main_watch_url)],
-            [InlineKeyboardButton("📥 Fast Download (Ads)", url=main_dl_url)],
+            [InlineKeyboardButton("🌐 Watch Online", url=watch_bot_url)],
+            [InlineKeyboardButton("📥 Fast Download (Ads)", url=dl_bot_url)],
             [
                 InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=buy_stars_url),
                 InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)
@@ -563,37 +584,24 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER & STORAGE PEER CACHER
+# 4. FORWARD-TO-VIP CONVERTER
 # =========================================================
 
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
     try:
-        fwd_chat = message.forward_from_chat
-
-        # 1. Storage Channel message forward cache
-        if fwd_chat and str(fwd_chat.id) == str(STORAGE_CHANNEL):
-            try:
-                await client.get_chat(fwd_chat.id)
-                await message.reply_text(f"🎉 **Storage Channel Peer Cached!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Web Streaming සහ Fast Download 100% ක් වැඩ කරනු ඇත.")
-                return
-            except Exception as e:
-                await message.reply_text(f"⚠️ Storage Cache Error: {e}")
-                return
-
-        # 2. Main channel forward to VIP
         target_text = message.caption or message.text or ""
         msg_id = None
         if message.reply_markup and message.reply_markup.inline_keyboard:
             for row in message.reply_markup.inline_keyboard:
                 for btn in row:
-                    if btn.url and "/watch/" in btn.url:
-                        match = re.search(r"/watch/(\d+)", btn.url)
+                    if btn.url and ("watch_" in btn.url or "/watch/" in btn.url):
+                        match = re.search(r"(?:watch_|/watch/)(\d+)", btn.url)
                         if match:
                             msg_id = match.group(1)
                             break
-                    elif btn.url and "/download/" in btn.url:
-                        match = re.search(r"/download/(\d+)", btn.url)
+                    elif btn.url and ("dl_" in btn.url or "/download/" in btn.url):
+                        match = re.search(r"(?:dl_|/download/)(\d+)", btn.url)
                         if match:
                             msg_id = match.group(1)
                             break
@@ -640,7 +648,7 @@ async def manual_share_to_vip(client: Client, message: Message):
         await message.reply_text(f"❌ Error: {vip_err}")
 
 # =========================================================
-# 5. BOT COMMANDS & PAYMENTS
+# 5. BOT COMMANDS & ACTIONS (STRICT DUAL FSUB UNLOCK)
 # =========================================================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -648,7 +656,7 @@ async def handle_start(client: Client, message: Message):
     text = message.text
     param = text.split()[1] if len(text.split()) > 1 else ""
 
-    # VIP Direct File Download (Direct Bot API call - 0% Peer Error)
+    # VIP Direct File Download (Direct Bot API call - No verification needed for paid VIPs)
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ Movie එක:")
@@ -660,19 +668,38 @@ async def handle_start(client: Client, message: Message):
                 await message.reply_text(f"⚠️ File එක ලබාදීමට නොහැකි විය: {copy_err}")
         return
 
-    # Check Backup Channel access for all other actions
+    # Check Dual Channel (Main + Backup) access for EVERY action
     if not await check_user_access(client, message.from_user.id):
-        markup = await get_backup_button(client, param)
+        markup = await get_dual_fsub_buttons(param)
         await message.reply_text(
-            "🔒 **පළමු වර බාගත කිරීම සත්‍යාපනය (First-Time Verification):**\n\n"
-            "චිත්‍රපට ලබා ගැනීමට ප්‍රථමයෙන් අපගේ **Backup Channel** එකට එක්වන්න.\n"
+            "🔒 **ප්‍රවේශය සත්‍යාපනය කර නොමැත! (Channel Verification)**\n\n"
+            "චිත්‍රපට නැරඹීමට, බාගත කිරීමට, හෝ VIP ලබා ගැනීමට ප්‍රථමයෙන් පහත **Main Channel** සහ **Backup Channel** යන දෙකටම Join වන්න.\n"
             "*(මෙය අවශ්‍ය වන්නේ පළමු වතාවට පමණි)*",
             reply_markup=markup
         )
         return
 
+    # Once verified, unlock the requested content
     if param:
-        if param.startswith("buy_"):
+        if param.startswith("watch_"):
+            msg_id = param.split("_")[1]
+            watch_url = f"{BASE_URL}/watch/{msg_id}"
+            await message.reply_text(
+                "🎉 **සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය නැරඹීමට පහත Button එක ඔබන්න:**",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Watch Online Now", url=watch_url)]])
+            )
+            return
+
+        elif param.startswith("dl_"):
+            msg_id = param.split("_")[1]
+            dl_url = f"{BASE_URL}/download/{msg_id}"
+            await message.reply_text(
+                "🎉 **සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය බාගත කිරීමට පහත Button එක ඔබන්න:**",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie Now", url=dl_url)]])
+            )
+            return
+
+        elif param.startswith("buy_"):
             msg_id = param.split("_")[1]
             await send_stars_invoice(
                 chat_id=message.chat.id,
@@ -687,7 +714,7 @@ async def handle_start(client: Client, message: Message):
             await send_stars_invoice(
                 chat_id=message.chat.id,
                 title="VIP Membership (30 Days)",
-                description=f"Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
+                description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
                 payload="vip_sub",
                 stars=VIP_STAR_PRICE
             )
@@ -698,10 +725,9 @@ async def handle_start(client: Client, message: Message):
 @app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help"]))
 async def handle_search(client: Client, message: Message):
     if not await check_user_access(client, message.from_user.id):
-        markup = await get_backup_button(client)
+        markup = await get_dual_fsub_buttons()
         await message.reply_text(
-            "🔒 **පළමු වර සෙවීම සත්‍යාපනය (First-Time Verification):**\n"
-            "කරුණාකර අපගේ Backup Channel එකට Join වී සෙවීම ආරම්භ කරන්න:",
+            "🔒 **චිත්‍රපට සෙවීමට පෙර අපගේ Channels වලට එක්වන්න:**",
             reply_markup=markup
         )
         return
@@ -737,7 +763,7 @@ async def handle_search(client: Client, message: Message):
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=dl_url)],
             [
-                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", callback_data=f"buy_single_{msg_id}"),
+                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}"),
                 InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")
             ]
         ]
@@ -827,6 +853,13 @@ async def main():
     await app.start()
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
+
+    # Force load and cache Storage Channel peer access hash
+    try:
+        await app.resolve_peer(STORAGE_CHANNEL)
+        print("🎉 Storage Channel Peer Access Hash Loaded Successfully!")
+    except Exception as pe:
+        print(f"⚠️ Storage Peer Startup Warning: {pe}")
 
     asyncio.create_task(vip_expiry_checker())
     asyncio.create_task(keep_alive_self_ping())
