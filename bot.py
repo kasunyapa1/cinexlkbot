@@ -12,6 +12,7 @@ from pyrogram.types import (
     CallbackQuery
 )
 from pyrogram.errors import UserNotParticipant, ChatAdminRequired, PeerIdInvalid, RPCError
+from pyrogram.raw.types import InputPeerChannel
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -39,6 +40,8 @@ VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
 MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
 BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
 
+STORAGE_INVITE_LINK = os.environ.get("STORAGE_INVITE_LINK", "").strip()
+
 VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "150"))
 SINGLE_STAR_PRICE = int(os.environ.get("SINGLE_STAR_PRICE", "5"))
 
@@ -63,9 +66,64 @@ db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
+peers_col = db_client["MovieDB"]["channel_peers"]
 
 # =========================================================
-# DIRECT TELEGRAM BOT API CALLS (FOR POSTING & COPYING)
+# PERMANENT PEER DATABASE RESOLVER
+# =========================================================
+async def save_peer_to_db(chat_id: int, access_hash: int):
+    try:
+        await peers_col.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"chat_id": chat_id, "access_hash": access_hash, "updated_at": datetime.utcnow()}},
+            upsert=True
+        )
+        print(f"💾 Peer {chat_id} access_hash saved to MongoDB!")
+    except Exception as e:
+        print(f"⚠️ DB save peer error: {e}")
+
+async def get_storage_peer():
+    # 1. Try Pyrogram's memory cache
+    try:
+        peer = await app.resolve_peer(STORAGE_CHANNEL)
+        return peer
+    except Exception:
+        pass
+
+    # 2. Try loading from MongoDB
+    try:
+        raw_id = int(str(STORAGE_CHANNEL).replace("-100", ""))
+        doc = await peers_col.find_one({"chat_id": raw_id})
+        if not doc:
+            doc = await peers_col.find_one({"chat_id": int(STORAGE_CHANNEL)})
+            
+        if doc and "access_hash" in doc:
+            peer = InputPeerChannel(channel_id=raw_id, access_hash=doc["access_hash"])
+            # Inject into pyrogram's internal storage
+            try:
+                await app.storage.update_peers([(peer.channel_id, peer.access_hash, "channel", "")])
+            except Exception:
+                pass
+            return peer
+    except Exception as e:
+        print(f"⚠️ Mongo peer load error: {e}")
+
+    # 3. Try resolving via Invite link
+    if STORAGE_INVITE_LINK:
+        try:
+            chat = await app.get_chat(STORAGE_INVITE_LINK)
+            if chat:
+                peer = await app.resolve_peer(chat.id)
+                if hasattr(peer, "access_hash"):
+                    await save_peer_to_db(peer.channel_id, peer.access_hash)
+                return peer
+        except Exception as inv_err:
+            print(f"⚠️ Invite link check error: {inv_err}")
+
+    return STORAGE_CHANNEL
+
+# =========================================================
+# DIRECT TELEGRAM BOT API CALLS
 # =========================================================
 async def send_tg_api_post(chat_id, text, reply_markup=None, photo_file_id=None):
     try:
@@ -132,7 +190,7 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
 # =========================================================
-# RELIABLE DUAL CHANNEL VERIFICATION SYSTEM
+# DUAL CHANNEL VERIFICATION SYSTEM
 # =========================================================
 async def is_member(client: Client, chat_target, user_id: int) -> bool:
     if not chat_target:
@@ -145,26 +203,11 @@ async def is_member(client: Client, chat_target, user_id: int) -> bool:
         return False
     except UserNotParticipant:
         return False
-    except (ChatAdminRequired, PeerIdInvalid) as e:
-        print(f"⚠️ Channel {chat_target} permission issue ({e}), bypassing...")
+    except (ChatAdminRequired, PeerIdInvalid):
         return True
-    except RPCError as e:
-        print(f"⚠️ Pyrogram RPC Error on {chat_target}: {e}")
-        # Try raw HTTP as fallback
-        try:
-            target = int(chat_target) if str(chat_target).lstrip("-").isdigit() else str(chat_target)
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json={"chat_id": target, "user_id": user_id}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    data = await resp.json()
-                    if data.get("ok"):
-                        st = data.get("result", {}).get("status", "")
-                        return st in ["member", "administrator", "creator", "restricted"]
-        except Exception:
-            pass
+    except RPCError:
         return True
-    except Exception as e:
-        print(f"⚠️ Unexpected member check error on {chat_target}: {e}")
+    except Exception:
         return True
 
 async def check_user_access(client: Client, user_id: int) -> bool:
@@ -175,8 +218,6 @@ async def check_user_access(client: Client, user_id: int) -> bool:
 
         in_main = await is_member(client, MAIN_CHANNEL, user_id)
         in_backup = await is_member(client, BACKUP_CHANNEL, user_id)
-
-        print(f"🔍 Access Check for {user_id} -> Main: {in_main}, Backup: {in_backup}")
 
         if in_main and in_backup:
             await bot_users_col.update_one(
@@ -193,7 +234,6 @@ async def check_user_access(client: Client, user_id: int) -> bool:
 async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> InlineKeyboardMarkup:
     buttons = []
     
-    # 1. Main Channel Link
     if MAIN_CHANNEL:
         main_url = None
         if isinstance(MAIN_CHANNEL, str) and MAIN_CHANNEL.startswith("@"):
@@ -207,7 +247,6 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
         if main_url:
             buttons.append([InlineKeyboardButton("📢 Join Main Channel", url=main_url)])
 
-    # 2. Backup Channel Link
     if BACKUP_CHANNEL:
         backup_url = None
         if isinstance(BACKUP_CHANNEL, str) and BACKUP_CHANNEL.startswith("@"):
@@ -430,10 +469,8 @@ async def stream_media(request):
     try:
         msg_id = int(request.match_info['msg_id'])
         
-        try:
-            target_peer = await app.resolve_peer(STORAGE_CHANNEL)
-        except Exception:
-            target_peer = STORAGE_CHANNEL
+        # Load peer via Mongo Database / Fallback
+        target_peer = await get_storage_peer()
 
         msg = await app.get_messages(target_peer, msg_id)
         if not msg:
@@ -461,7 +498,7 @@ async def stream_media(request):
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL
+# 2. AUTO-POST TO MAIN CHANNEL & AUTO-CACHE STORAGE PEER
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -469,6 +506,14 @@ async def handle_storage_upload(client: Client, message: Message):
     try:
         if str(message.chat.id) != str(STORAGE_CHANNEL):
             return
+
+        # Auto-Save Storage Peer into MongoDB on every upload
+        try:
+            peer = await client.resolve_peer(message.chat.id)
+            if hasattr(peer, "access_hash"):
+                await save_peer_to_db(peer.channel_id, peer.access_hash)
+        except Exception:
+            pass
 
         media = message.document or message.video
         if not media:
@@ -599,12 +644,22 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER
+# 4. FORWARD-TO-VIP CONVERTER & PERMANENT PEER STORAGE
 # =========================================================
 
 @app.on_message(filters.private & filters.forwarded)
 async def manual_share_to_vip(client: Client, message: Message):
     try:
+        fwd_chat = message.forward_from_chat
+
+        # If forwarded from Storage Channel, save access hash into MongoDB permanently!
+        if fwd_chat and str(fwd_chat.id) == str(STORAGE_CHANNEL):
+            peer = await client.resolve_peer(fwd_chat.id)
+            if hasattr(peer, "access_hash"):
+                await save_peer_to_db(peer.channel_id, peer.access_hash)
+            await message.reply_text(f"🎉 **Storage Channel Access Hash Saved to MongoDB!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Render restart වුණත් කවදාවත් Streaming Error එන්නේ නැත.")
+            return
+
         target_text = message.caption or message.text or ""
         msg_id = None
         if message.reply_markup and message.reply_markup.inline_keyboard:
@@ -918,11 +973,8 @@ async def main():
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    try:
-        await app.resolve_peer(STORAGE_CHANNEL)
-        print("🎉 Storage Channel Peer Access Hash Loaded Successfully!")
-    except Exception as pe:
-        print(f"⚠️ Storage Peer Startup Warning: {pe}")
+    # Initial resolve attempt
+    await get_storage_peer()
 
     asyncio.create_task(vip_expiry_checker())
     asyncio.create_task(keep_alive_self_ping())
