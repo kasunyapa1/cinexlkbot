@@ -73,42 +73,34 @@ peers_col = db_client["MovieDB"]["channel_peers"]
 # =========================================================
 async def save_peer_to_db(chat_id: int, access_hash: int):
     try:
+        raw_id = int(str(chat_id).replace("-100", ""))
         await peers_col.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"chat_id": chat_id, "access_hash": access_hash, "updated_at": datetime.utcnow()}},
+            {"chat_id": raw_id},
+            {"$set": {"chat_id": raw_id, "access_hash": access_hash, "updated_at": datetime.utcnow()}},
             upsert=True
         )
-        print(f"💾 Peer {chat_id} access_hash saved to MongoDB!")
+        # Inject directly into Pyrogram local storage
+        try:
+            await app.storage.update_peers([(raw_id, access_hash, "channel", "")])
+        except Exception:
+            pass
+        print(f"💾 Storage Peer (ID: {raw_id}) Hash registered and saved!")
     except Exception as e:
         print(f"⚠️ DB save peer error: {e}")
 
-async def get_storage_peer():
-    # 1. Try Pyrogram's memory cache
-    try:
-        peer = await app.resolve_peer(STORAGE_CHANNEL)
-        return peer
-    except Exception:
-        pass
-
-    # 2. Try loading from MongoDB
+async def restore_storage_peer():
     try:
         raw_id = int(str(STORAGE_CHANNEL).replace("-100", ""))
         doc = await peers_col.find_one({"chat_id": raw_id})
         if not doc:
             doc = await peers_col.find_one({"chat_id": int(STORAGE_CHANNEL)})
-            
-        if doc and "access_hash" in doc:
-            peer = InputPeerChannel(channel_id=raw_id, access_hash=doc["access_hash"])
-            # Inject into pyrogram's internal storage
-            try:
-                await app.storage.update_peers([(peer.channel_id, peer.access_hash, "channel", "")])
-            except Exception:
-                pass
-            return peer
-    except Exception as e:
-        print(f"⚠️ Mongo peer load error: {e}")
 
-    # 3. Try resolving via Invite link
+        if doc and "access_hash" in doc:
+            await app.storage.update_peers([(raw_id, doc["access_hash"], "channel", "")])
+            return True
+    except Exception as e:
+        print(f"⚠️ Mongo peer restore warning: {e}")
+
     if STORAGE_INVITE_LINK:
         try:
             chat = await app.get_chat(STORAGE_INVITE_LINK)
@@ -116,11 +108,11 @@ async def get_storage_peer():
                 peer = await app.resolve_peer(chat.id)
                 if hasattr(peer, "access_hash"):
                     await save_peer_to_db(peer.channel_id, peer.access_hash)
-                return peer
+                    return True
         except Exception as inv_err:
-            print(f"⚠️ Invite link check error: {inv_err}")
+            print(f"⚠️ Invite link check warning: {inv_err}")
 
-    return STORAGE_CHANNEL
+    return False
 
 # =========================================================
 # DIRECT TELEGRAM BOT API CALLS
@@ -468,11 +460,13 @@ async def download_page(request):
 async def stream_media(request):
     try:
         msg_id = int(request.match_info['msg_id'])
-        
-        # Load peer via Mongo Database / Fallback
-        target_peer = await get_storage_peer()
 
-        msg = await app.get_messages(target_peer, msg_id)
+        # Ensure Peer is restored in SQLite Storage
+        await restore_storage_peer()
+
+        # Always pass Integer Chat ID to get_messages
+        target_id = int(STORAGE_CHANNEL) if str(STORAGE_CHANNEL).lstrip("-").isdigit() else STORAGE_CHANNEL
+        msg = await app.get_messages(target_id, msg_id)
         if not msg:
             return web.Response(text="File message not found in storage channel.", status=404)
 
@@ -498,7 +492,7 @@ async def stream_media(request):
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL & AUTO-CACHE STORAGE PEER
+# 2. AUTO-POST TO MAIN CHANNEL & AUTO-SAVE PEER
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -507,7 +501,7 @@ async def handle_storage_upload(client: Client, message: Message):
         if str(message.chat.id) != str(STORAGE_CHANNEL):
             return
 
-        # Auto-Save Storage Peer into MongoDB on every upload
+        # Auto-Save Peer access hash into MongoDB
         try:
             peer = await client.resolve_peer(message.chat.id)
             if hasattr(peer, "access_hash"):
@@ -644,7 +638,7 @@ async def vip_expiry_checker():
         await asyncio.sleep(6 * 3600)
 
 # =========================================================
-# 4. FORWARD-TO-VIP CONVERTER & PERMANENT PEER STORAGE
+# 4. FORWARD-TO-VIP CONVERTER & STORAGE PEER REGISTRATION
 # =========================================================
 
 @app.on_message(filters.private & filters.forwarded)
@@ -657,7 +651,7 @@ async def manual_share_to_vip(client: Client, message: Message):
             peer = await client.resolve_peer(fwd_chat.id)
             if hasattr(peer, "access_hash"):
                 await save_peer_to_db(peer.channel_id, peer.access_hash)
-            await message.reply_text(f"🎉 **Storage Channel Access Hash Saved to MongoDB!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Render restart වුණත් කවදාවත් Streaming Error එන්නේ නැත.")
+            await message.reply_text(f"🎉 **Storage Channel Access Hash Saved to MongoDB!**\n\nTitle: `{fwd_chat.title}`\nID: `{fwd_chat.id}`\n\nදැන් Web Streaming සහ Fast Download 100% ක් වැඩ කරනු ඇත.")
             return
 
         target_text = message.caption or message.text or ""
@@ -784,7 +778,8 @@ async def handle_start(client: Client, message: Message):
         res = await send_tg_api_copy(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         if not res.get("ok"):
             try:
-                await client.copy_message(chat_id=message.chat.id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
+                target_id = int(STORAGE_CHANNEL) if str(STORAGE_CHANNEL).lstrip("-").isdigit() else STORAGE_CHANNEL
+                await client.copy_message(chat_id=message.chat.id, from_chat_id=target_id, message_id=msg_id)
             except Exception as copy_err:
                 await message.reply_text(f"⚠️ File එක ලබාදීමට නොහැකි විය: {copy_err}")
         return
@@ -973,8 +968,8 @@ async def main():
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    # Initial resolve attempt
-    await get_storage_peer()
+    # Initial Peer cache restore
+    await restore_storage_peer()
 
     asyncio.create_task(vip_expiry_checker())
     asyncio.create_task(keep_alive_self_ping())
