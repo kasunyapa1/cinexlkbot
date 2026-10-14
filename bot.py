@@ -93,11 +93,10 @@ async def save_peer_to_db(chat_id: int, access_hash: int):
             {"$set": {"chat_id": raw_id, "access_hash": access_hash, "updated_at": datetime.utcnow()}},
             upsert=True
         )
-        # Pyrogram 2.0+ requires exactly 5 values: (peer_id, access_hash, type, username, phone_number)
         try:
             await app.storage.update_peers([(raw_id, access_hash, "channel", "", "")])
         except Exception as storage_err:
-            print(f"⚠️ Storage local peer update note: {storage_err}")
+            print(f"⚠️ Storage peer note: {storage_err}")
         print(f"💾 Storage Peer (ID: {raw_id}) Hash registered and saved!")
     except Exception as e:
         print(f"⚠️ DB save peer error: {e}")
@@ -116,7 +115,6 @@ async def restore_storage_peer():
     except Exception as e:
         print(f"⚠️ Mongo peer restore warning: {e}")
 
-    # Fallback to get_chat without invalid raw CheckChatInvite
     if STORAGE_INVITE_LINK:
         try:
             chat = await app.get_chat(STORAGE_INVITE_LINK)
@@ -506,11 +504,10 @@ async def stream_media(request):
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL (HANDLES MESSAGES & CHANNEL POSTS)
+# 2. AUTO-POST TO MAIN CHANNEL (HANDLES MESSAGES IN CHANNELS)
 # =========================================================
 
-@app.on_message(filters.document | filters.video)
-@app.on_channel_post(filters.document | filters.video)
+@app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
     try:
         if not message.chat:
@@ -519,11 +516,11 @@ async def handle_storage_upload(client: Client, message: Message):
         chat_id_clean = str(message.chat.id).replace("-100", "").replace("-", "")
         storage_id_clean = str(STORAGE_CHANNEL).replace("-100", "").replace("-", "")
 
-        # Strictly filter only files coming from storage channel
+        # Only process files uploaded to the configured storage channel
         if chat_id_clean != storage_id_clean:
             return
 
-        print(f"\n📥 [Storage Channel] New File Event Detected! Message ID: {message.id}")
+        print(f"\n📥 [Storage Channel] New File Upload Detected! Message ID: {message.id}")
 
         # Auto-Save Peer access hash into MongoDB
         try:
