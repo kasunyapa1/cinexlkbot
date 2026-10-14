@@ -13,7 +13,6 @@ from pyrogram.types import (
     CallbackQuery
 )
 from pyrogram.errors import UserNotParticipant, ChatAdminRequired, PeerIdInvalid, RPCError
-from pyrogram.raw.types import InputPeerChannel
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -88,33 +87,36 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 # =========================================================
 async def save_peer_to_db(chat_id: int, access_hash: int):
     try:
-        raw_id = int(str(chat_id).replace("-100", ""))
+        raw_id = int(str(chat_id).replace("-100", "").replace("-", ""))
         await peers_col.update_one(
             {"chat_id": raw_id},
             {"$set": {"chat_id": raw_id, "access_hash": access_hash, "updated_at": datetime.utcnow()}},
             upsert=True
         )
+        # Pyrogram 2.0+ requires exactly 5 values: (peer_id, access_hash, type, username, phone_number)
         try:
-            await app.storage.update_peers([(raw_id, access_hash, "channel", "")])
-        except Exception:
-            pass
+            await app.storage.update_peers([(raw_id, access_hash, "channel", "", "")])
+        except Exception as storage_err:
+            print(f"⚠️ Storage local peer update note: {storage_err}")
         print(f"💾 Storage Peer (ID: {raw_id}) Hash registered and saved!")
     except Exception as e:
         print(f"⚠️ DB save peer error: {e}")
 
 async def restore_storage_peer():
     try:
-        raw_id = int(str(STORAGE_CHANNEL).replace("-100", ""))
+        raw_id = int(str(STORAGE_CHANNEL).replace("-100", "").replace("-", ""))
         doc = await peers_col.find_one({"chat_id": raw_id})
-        if not doc:
-            doc = await peers_col.find_one({"chat_id": int(STORAGE_CHANNEL)})
 
         if doc and "access_hash" in doc:
-            await app.storage.update_peers([(raw_id, doc["access_hash"], "channel", "")])
-            return True
+            try:
+                await app.storage.update_peers([(raw_id, doc["access_hash"], "channel", "", "")])
+                return True
+            except Exception as e:
+                print(f"⚠️ Storage local restore warning: {e}")
     except Exception as e:
         print(f"⚠️ Mongo peer restore warning: {e}")
 
+    # Fallback to get_chat without invalid raw CheckChatInvite
     if STORAGE_INVITE_LINK:
         try:
             chat = await app.get_chat(STORAGE_INVITE_LINK)
@@ -504,21 +506,32 @@ async def stream_media(request):
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL
+# 2. AUTO-POST TO MAIN CHANNEL (HANDLES MESSAGES & CHANNEL POSTS)
 # =========================================================
 
-@app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
+@app.on_message(filters.document | filters.video)
+@app.on_channel_post(filters.document | filters.video)
 async def handle_storage_upload(client: Client, message: Message):
     try:
-        if str(message.chat.id) != str(STORAGE_CHANNEL):
+        if not message.chat:
             return
 
+        chat_id_clean = str(message.chat.id).replace("-100", "").replace("-", "")
+        storage_id_clean = str(STORAGE_CHANNEL).replace("-100", "").replace("-", "")
+
+        # Strictly filter only files coming from storage channel
+        if chat_id_clean != storage_id_clean:
+            return
+
+        print(f"\n📥 [Storage Channel] New File Event Detected! Message ID: {message.id}")
+
+        # Auto-Save Peer access hash into MongoDB
         try:
             peer = await client.resolve_peer(message.chat.id)
             if hasattr(peer, "access_hash"):
                 await save_peer_to_db(peer.channel_id, peer.access_hash)
-        except Exception:
-            pass
+        except Exception as p_err:
+            print(f"⚠️ Resolve peer error on upload: {p_err}")
 
         media = message.document or message.video
         if not media:
@@ -528,7 +541,7 @@ async def handle_storage_upload(client: Client, message: Message):
         size_mb = round(media.file_size / (1024 * 1024), 2)
         msg_id = message.id
 
-        print(f"\n📥 [Storage Channel] New File Uploaded: {file_name} (Msg ID: {msg_id})")
+        print(f"📦 Processing File: {file_name} ({size_mb} MB)")
 
         try:
             await files_col.update_one(
@@ -657,7 +670,7 @@ async def manual_share_to_vip(client: Client, message: Message):
     try:
         fwd_chat = message.forward_from_chat
 
-        if fwd_chat and str(fwd_chat.id) == str(STORAGE_CHANNEL):
+        if fwd_chat and str(fwd_chat.id).replace("-100", "").replace("-", "") == str(STORAGE_CHANNEL).replace("-100", "").replace("-", ""):
             peer = await client.resolve_peer(fwd_chat.id)
             if hasattr(peer, "access_hash"):
                 await save_peer_to_db(peer.channel_id, peer.access_hash)
@@ -726,7 +739,7 @@ async def manual_share_to_vip(client: Client, message: Message):
 # =========================================================
 
 def get_vip_selection_markup():
-    approx_star_lkr = int(VIP_STAR_PRICE * 6.8)  # 250 Stars ≈ Rs. 1700
+    approx_star_lkr = int(VIP_STAR_PRICE * 6.8)
     savings = max(0, approx_star_lkr - VIP_LKR_PRICE)
 
     return InlineKeyboardMarkup([
