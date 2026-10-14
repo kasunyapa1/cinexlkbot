@@ -522,7 +522,6 @@ async def handle_storage_upload(client: Client, message: Message):
 
         print(f"\n📥 [Storage Channel] New File Upload Detected! Message ID: {message.id}")
 
-        # Auto-Save Peer access hash into MongoDB
         try:
             peer = await client.resolve_peer(message.chat.id)
             if hasattr(peer, "access_hash"):
@@ -556,12 +555,13 @@ async def handle_storage_upload(client: Client, message: Message):
         buy_stars_url = f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"
         vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
+        # UPDATED: "👑 Buy VIP Pass (Monthly)"
         main_buttons = [
             [InlineKeyboardButton("🌐 Watch Online", url=watch_bot_url)],
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=dl_bot_url)],
             [
                 InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=buy_stars_url),
-                InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=vip_buy_url)
+                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
             ]
         ]
         main_markup = InlineKeyboardMarkup(main_buttons)
@@ -754,7 +754,7 @@ def get_vip_selection_markup():
 async def vip_selection_callback(client: Client, callback: CallbackQuery):
     await callback.answer()
     text = (
-        "👑 **Cinex LK VIP Pass (30 Days)**\n\n"
+        "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n"
         "✨ **VIP වරප්‍රසාද:**\n"
         "• Direct Files (Bot එකෙන්ම කෙලින්ම Movies ලබාගැනීම)\n"
         "• කිසිදු දැන්වීමක් නොමැත (100% No Ads Online Player & Fast Download)\n"
@@ -922,7 +922,7 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
                 stars=SINGLE_STAR_PRICE
             )
         elif param == "vip":
-            text = "👑 **Cinex LK VIP Pass (30 Days)**\n\n👇 **ගෙවීම් ක්‍රමය තෝරන්න:**"
+            text = "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n👇 **ගෙවීම් ක්‍රමය තෝරන්න:**"
             await client.send_message(chat_id=user_id, text=text, reply_markup=get_vip_selection_markup())
         else:
             await client.send_message(chat_id=user_id, text="👋 **සාදරයෙන් පිළිගන්නවා!** ඔබට අවශ්‍ය Movie එකේ නම type කර search කරන්න.")
@@ -987,7 +987,7 @@ async def handle_start(client: Client, message: Message):
             return
 
         elif param == "vip":
-            text = "👑 **Cinex LK VIP Pass (30 Days)**\n\n👇 **ගෙවීම් ක්‍රමය තෝරන්න:**"
+            text = "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n👇 **ගෙවීම් ක්‍රමය තෝරන්න:**"
             await message.reply_text(text, reply_markup=get_vip_selection_markup())
             return
 
@@ -1031,12 +1031,13 @@ async def handle_search(client: Client, message: Message):
 
         caption = f"🎬 **{file['file_name']}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **නැරඹීමට හෝ බාගත කිරීමට තෝරන්න:**"
         
+        # UPDATED: "👑 Buy VIP Pass (Monthly)"
         buttons = [
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=dl_url)],
             [
                 InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}"),
-                InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", callback_data="buy_vip_pass")
+                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", callback_data="buy_vip_pass")
             ]
         ]
         await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
