@@ -47,7 +47,7 @@ STORAGE_INVITE_LINK = os.environ.get("STORAGE_INVITE_LINK", "").strip()
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "")
 
-VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "150"))
+VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "250"))
 VIP_LKR_PRICE = int(os.environ.get("VIP_LKR_PRICE", "1000"))
 SINGLE_STAR_PRICE = int(os.environ.get("SINGLE_STAR_PRICE", "5"))
 
@@ -726,9 +726,18 @@ async def manual_share_to_vip(client: Client, message: Message):
 # =========================================================
 
 def get_vip_selection_markup():
+    approx_star_lkr = int(VIP_STAR_PRICE * 6.8)  # 250 Stars ≈ Rs. 1700
+    savings = max(0, approx_star_lkr - VIP_LKR_PRICE)
+
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"⭐ Pay with Telegram Stars ({VIP_STAR_PRICE} ⭐️)", callback_data="pay_vip_stars")],
-        [InlineKeyboardButton(f"🇱🇰 Bank Transfer (Rs. {VIP_LKR_PRICE})", callback_data="pay_vip_bank")]
+        [InlineKeyboardButton(
+            f"⭐ Pay with Telegram Stars ({VIP_STAR_PRICE} ⭐️ / ~Rs. {approx_star_lkr})", 
+            callback_data="pay_vip_stars"
+        )],
+        [InlineKeyboardButton(
+            f"🇱🇰 Bank Transfer - Rs. {VIP_LKR_PRICE} (Save Rs. {savings} 🔥)", 
+            callback_data="pay_vip_bank"
+        )]
     ])
 
 @app.on_callback_query(filters.regex(r"^buy_vip_pass$"))
