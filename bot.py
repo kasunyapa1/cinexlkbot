@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import random
 import asyncio
 from datetime import datetime, timedelta
 import aiohttp
@@ -42,8 +43,21 @@ BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762
 
 STORAGE_INVITE_LINK = os.environ.get("STORAGE_INVITE_LINK", "").strip()
 
+# Admin & Pricing Configurations
+ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "")
+
 VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "150"))
+VIP_LKR_PRICE = int(os.environ.get("VIP_LKR_PRICE", "1000"))
 SINGLE_STAR_PRICE = int(os.environ.get("SINGLE_STAR_PRICE", "5"))
+
+BANK_DETAILS = os.environ.get(
+    "BANK_DETAILS",
+    "🏦 **Bank:** Commercial Bank\n"
+    "👤 **Name:** Cinex LK Admin\n"
+    "💳 **Account No:** 8001234567\n"
+    "🏢 **Branch:** Colombo"
+)
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
@@ -67,6 +81,7 @@ files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 peers_col = db_client["MovieDB"]["channel_peers"]
+manual_orders_col = db_client["MovieDB"]["manual_orders"]
 
 # =========================================================
 # PERMANENT PEER DATABASE RESOLVER
@@ -79,7 +94,6 @@ async def save_peer_to_db(chat_id: int, access_hash: int):
             {"$set": {"chat_id": raw_id, "access_hash": access_hash, "updated_at": datetime.utcnow()}},
             upsert=True
         )
-        # Inject directly into Pyrogram local storage
         try:
             await app.storage.update_peers([(raw_id, access_hash, "channel", "")])
         except Exception:
@@ -461,10 +475,8 @@ async def stream_media(request):
     try:
         msg_id = int(request.match_info['msg_id'])
 
-        # Ensure Peer is restored in SQLite Storage
         await restore_storage_peer()
 
-        # Always pass Integer Chat ID to get_messages
         target_id = int(STORAGE_CHANNEL) if str(STORAGE_CHANNEL).lstrip("-").isdigit() else STORAGE_CHANNEL
         msg = await app.get_messages(target_id, msg_id)
         if not msg:
@@ -492,7 +504,7 @@ async def stream_media(request):
         return web.Response(text=f"Error streaming file: {e}", status=500)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL & AUTO-SAVE PEER
+# 2. AUTO-POST TO MAIN CHANNEL
 # =========================================================
 
 @app.on_message((filters.chat(STORAGE_CHANNEL) | filters.channel) & (filters.document | filters.video))
@@ -501,7 +513,6 @@ async def handle_storage_upload(client: Client, message: Message):
         if str(message.chat.id) != str(STORAGE_CHANNEL):
             return
 
-        # Auto-Save Peer access hash into MongoDB
         try:
             peer = await client.resolve_peer(message.chat.id)
             if hasattr(peer, "access_hash"):
@@ -646,7 +657,6 @@ async def manual_share_to_vip(client: Client, message: Message):
     try:
         fwd_chat = message.forward_from_chat
 
-        # If forwarded from Storage Channel, save access hash into MongoDB permanently!
         if fwd_chat and str(fwd_chat.id) == str(STORAGE_CHANNEL):
             peer = await client.resolve_peer(fwd_chat.id)
             if hasattr(peer, "access_hash"):
@@ -712,7 +722,145 @@ async def manual_share_to_vip(client: Client, message: Message):
         await message.reply_text(f"❌ Error: {vip_err}")
 
 # =========================================================
-# 5. BOT COMMANDS & CALLBACK HANDLERS
+# 5. VIP PAYMENT SELECTION & ADMIN NOTIFICATIONS
+# =========================================================
+
+def get_vip_selection_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⭐ Pay with Telegram Stars ({VIP_STAR_PRICE} ⭐️)", callback_data="pay_vip_stars")],
+        [InlineKeyboardButton(f"🇱🇰 Bank Transfer (Rs. {VIP_LKR_PRICE})", callback_data="pay_vip_bank")]
+    ])
+
+@app.on_callback_query(filters.regex(r"^buy_vip_pass$"))
+async def vip_selection_callback(client: Client, callback: CallbackQuery):
+    await callback.answer()
+    text = (
+        "👑 **Cinex LK VIP Pass (30 Days)**\n\n"
+        "✨ **VIP වරප්‍රසාද:**\n"
+        "• Direct Files (Bot එකෙන්ම කෙලින්ම Movies ලබාගැනීම)\n"
+        "• කිසිදු දැන්වීමක් නොමැත (100% No Ads Online Player & Fast Download)\n"
+        "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n\n"
+        "👇 **ඔබ ගෙවීම් කිරීමට බලාපොරොත්තු වන ක්‍රමය තෝරන්න:**"
+    )
+    await callback.message.reply_text(text, reply_markup=get_vip_selection_markup())
+
+@app.on_callback_query(filters.regex(r"^pay_vip_stars$"))
+async def pay_vip_stars_handler(client: Client, callback: CallbackQuery):
+    await callback.answer()
+    await send_stars_invoice(
+        chat_id=callback.from_user.id,
+        title="VIP Membership (30 Days)",
+        description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
+        payload="vip_sub",
+        stars=VIP_STAR_PRICE
+    )
+
+@app.on_callback_query(filters.regex(r"^pay_vip_bank$"))
+async def pay_vip_bank_handler(client: Client, callback: CallbackQuery):
+    user = callback.from_user
+    user_id = user.id
+    username = f"@{user.username}" if user.username else "No Username"
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    ref_code = f"CX-{random.randint(10000, 99999)}"
+
+    # Save order to DB
+    await manual_orders_col.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "username": username,
+            "name": full_name,
+            "ref_code": ref_code,
+            "amount": VIP_LKR_PRICE,
+            "status": "pending",
+            "created_at": datetime.utcnow()
+        }},
+        upsert=True
+    )
+
+    # 1. SEND ALERT DIRECTLY TO ADMIN
+    if ADMIN_USER_ID:
+        admin_alert = (
+            "🔔 **නව Bank Payment ඉල්ලීමක්!**\n\n"
+            f"👤 **පරිශීලකයා:** {full_name} ({username})\n"
+            f"🆔 **User ID:** `{user_id}`\n"
+            f"🔑 **Reference Code:** `{ref_code}`\n"
+            f"💰 **මුදල:** `Rs. {VIP_LKR_PRICE}`\n"
+            f"⏰ **වේලාව:** `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC`\n\n"
+            f"📌 *User slip එක එවූ පසු verify කර VIP දීමට පහත command එක ඔබන්න:*\n"
+            f"`/addvip {user_id}`"
+        )
+        try:
+            await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
+        except Exception as alert_err:
+            print(f"⚠️ Failed to send admin payment alert: {alert_err}")
+
+    # 2. SEND INSTRUCTIONS TO USER
+    admin_link = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
+
+    text = (
+        "🇱🇰 **බැංකු තැන්පතු මඟින් VIP ලබාගැනීම:**\n\n"
+        f"💰 **ගෙවිය යුතු මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n"
+        f"{BANK_DETAILS}\n\n"
+        f"⚠️ **අනිවාර්යයි (Very Important):**\n"
+        f"මුදල් තැන්පත් කරන විට / Online Transfer කරන විට Reference හෝ Remarks සඳහා පහත ඔබගේ Unique Code එක ඇතුළත් කරන්න:\n"
+        f"🔑 **ඔබගේ Reference Code එක:** `{ref_code}`\n\n"
+        f"📸 මුදල් ගෙවූ පසු, **ලැබුණු Payment Slip පත හෝ Screenshot එක** ඔබගේ User ID (`{user_id}`) සමඟ පහත Admin ගිණුමට Telegram මඟින් එවන්න."
+    )
+
+    buttons = []
+    if admin_link:
+        buttons.append([InlineKeyboardButton("📩 Send Slip to Admin", url=admin_link)])
+
+    await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+
+# ADMIN COMMAND: /addvip <USER_ID>
+@app.on_message(filters.command("addvip") & filters.private)
+async def admin_add_vip_handler(client: Client, message: Message):
+    if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply_text("❌ **භාවිතා කරන ආකාරය:** `/addvip <USER_ID>`\n(උදා: `/addvip 123456789`)")
+        return
+
+    try:
+        target_user_id = int(args[1].strip())
+    except ValueError:
+        await message.reply_text("❌ වැරදි User ID එකකි. අංකයක් පමණක් ඇතුළත් කරන්න.")
+        return
+
+    expiry_date = datetime.utcnow() + timedelta(days=30)
+    await vip_users_col.update_one(
+        {"user_id": target_user_id},
+        {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+        upsert=True
+    )
+
+    # Mark manual order as completed
+    await manual_orders_col.update_one(
+        {"user_id": target_user_id},
+        {"$set": {"status": "approved", "approved_at": datetime.utcnow()}}
+    )
+
+    try:
+        invite = await client.create_chat_invite_link(chat_id=VIP_CHANNEL, member_limit=1)
+        # Notify the User
+        await client.send_message(
+            chat_id=target_user_id,
+            text=(
+                "🎉 **ඔබගේ ගෙවීම තහවුරු විය! Cinex LK VIP සාමාජිකත්වය දින 30කට සක්‍රිය කරන ලදී.**\n\n"
+                f"🔗 **ඔබගේ විශේෂ VIP Channel Link එක:**\n{invite.invite_link}\n\n"
+                "*(මෙම Link එකෙන් සම්බන්ධ විය හැක්කේ ඔබට පමණි. දින 30 කින් සාමාජිකත්වය ස්වයංක්‍රීයව අවසන් වේ.)*"
+            )
+        )
+        await message.reply_text(f"✅ User `{target_user_id}` හට සාර්ථකව VIP Access ලබා දුනි. (දින 30 කින් Auto-Kick වේ)")
+    except Exception as e:
+        await message.reply_text(f"⚠️ Invite link සැකසීමේ දෝෂයකි: {e}")
+
+# =========================================================
+# 6. BOT COMMANDS & GENERAL ACTIONS
 # =========================================================
 
 @app.on_callback_query(filters.regex(r"^verify_"))
@@ -755,13 +903,8 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
                 stars=SINGLE_STAR_PRICE
             )
         elif param == "vip":
-            await send_stars_invoice(
-                chat_id=user_id,
-                title="VIP Membership (30 Days)",
-                description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
-                payload="vip_sub",
-                stars=VIP_STAR_PRICE
-            )
+            text = "👑 **Cinex LK VIP Pass (30 Days)**\n\n👇 **ගෙවීම් ක්‍රමය තෝරන්න:**"
+            await client.send_message(chat_id=user_id, text=text, reply_markup=get_vip_selection_markup())
         else:
             await client.send_message(chat_id=user_id, text="👋 **සාදරයෙන් පිළිගන්නවා!** ඔබට අවශ්‍ය Movie එකේ නම type කර search කරන්න.")
     else:
@@ -825,18 +968,13 @@ async def handle_start(client: Client, message: Message):
             return
 
         elif param == "vip":
-            await send_stars_invoice(
-                chat_id=message.chat.id,
-                title="VIP Membership (30 Days)",
-                description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
-                payload="vip_sub",
-                stars=VIP_STAR_PRICE
-            )
+            text = "👑 **Cinex LK VIP Pass (30 Days)**\n\n👇 **ගෙවීම් ක්‍රමය තෝරන්න:**"
+            await message.reply_text(text, reply_markup=get_vip_selection_markup())
             return
 
     await message.reply_text("👋 **සාදරයෙන් පිළිගන්නවා!**\nඔබට අවශ්‍ය Movie එකේ නම type කර search කරන්න.")
 
-@app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help"]))
+@app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help", "addvip"]))
 async def handle_search(client: Client, message: Message):
     if not await check_user_access(client, message.from_user.id):
         markup = await get_dual_fsub_buttons(client)
@@ -873,6 +1011,7 @@ async def handle_search(client: Client, message: Message):
         dl_url = f"{BASE_URL}/download/{msg_id}"
 
         caption = f"🎬 **{file['file_name']}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **නැරඹීමට හෝ බාගත කිරීමට තෝරන්න:**"
+        
         buttons = [
             [InlineKeyboardButton("🌐 Watch Online (Fast Player)", url=watch_url)],
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=dl_url)],
@@ -893,17 +1032,6 @@ async def pay_single(client: Client, callback: CallbackQuery):
         description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
         payload=f"single_{msg_id}",
         stars=SINGLE_STAR_PRICE
-    )
-
-@app.on_callback_query(filters.regex(r"^buy_vip_pass$"))
-async def pay_vip(client: Client, callback: CallbackQuery):
-    await callback.answer()
-    await send_stars_invoice(
-        chat_id=callback.from_user.id,
-        title="VIP Membership (30 Days)",
-        description="Cinex LK VIP Channel එකට දින 30ක ප්‍රවේශය (No Ads + Direct Files).",
-        payload="vip_sub",
-        stars=VIP_STAR_PRICE
     )
 
 @app.on_raw_update()
@@ -944,7 +1072,7 @@ async def payment_success(client: Client, message: Message):
             await message.reply_text("VIP Access සක්‍රිය විය! කරුණාකර Admin අමතන්න.")
 
 # =========================================================
-# 6. 24/7 SELF-PING & KEEP-ALIVE BACKGROUND WORKER
+# 7. 24/7 SELF-PING & KEEP-ALIVE BACKGROUND WORKER
 # =========================================================
 async def keep_alive_self_ping():
     await asyncio.sleep(15)
@@ -961,14 +1089,13 @@ async def keep_alive_self_ping():
         await asyncio.sleep(240)
 
 # =========================================================
-# 7. SERVER STARTUP & RUNNER
+# 8. SERVER STARTUP & RUNNER
 # =========================================================
 async def main():
     await app.start()
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
 
-    # Initial Peer cache restore
     await restore_storage_peer()
 
     asyncio.create_task(vip_expiry_checker())
