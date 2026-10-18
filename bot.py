@@ -1,15 +1,3 @@
-ඔබ Download button එක click කළ විට Bot ගේ /start කියා වැටී කිසිවක් සිදුනොවීමට (Silent drop වීමට) ප්‍රධාන තාක්ෂණික හේතුව මෙයයි:
-handle_start එකේ Force Subscription පරීක්ෂාව (check_user_access) තබා තිබුණේ Download parameter එක (adstep1_) කියවීමට කලින්ය.
-එහිදී:
- * check_user_access එකේදී MAIN_CHANNEL හෝ BACKUP_CHANNEL එකට User කෙනෙක් Join වී ඇත්දැයි බලන විට, Telegram API එකෙන් UserNotParticipant හෝ ChatAdminRequired දෝෂයක් ආ විට එය False වී return වේ.
- * එසේ වූ විට Bot විසින් get_dual_fsub_buttons යැවීමට උත්සාහ කළත්, Channel invite links export කිරීමට bot ට admin rights නොතිබුණහොත් හෝ crash වුවහොත් Bot ගේ පැත්තෙන් කිසිදු message එකක් user ට නොලැබී හිස් /start එකක් පමණක් වැටී නතර වේ.
- * වඩාත්ම වැදගත් කරුණ: Download කිරීමට පැමිණි Parameter එක (adstep1_ හෝ vipfile_) Force Sub Check එකට කලින් Extract කරගත යුතුය. User join වී නැතිනම් එම parameter එක අමතක නොවී තබාගෙන, Join වූ පසු කෙලින්ම Ad එකට යා යුතුය.
-මෙහි සිදුකළ ස්ථිර නිවැරදි කිරීම්:
- * Parameter Safe Parser: /start adstep1_123 ආ සැනින්ම parameter එක මුලින්ම ගබඩා කරගනී.
- * Crash-Proof FSUB Check: Channel check කිරීමේදී කිසිදු crash එකක් නොවී, user join වී නැතිනම් Join Buttons පැහැදිලිව පෙන්වයි.
- * Join වී සිටී නම් ක්ෂණික Ad Gate Trigger: User දැනටමත් channel එකේ සිටී නම් කෙලින්ම "🎬 Download Verification (Step 1 of 2)" පණිවිඩය සහ Web Gate Link එක Chat එකට ලැබෙනු ඇත.
-සම්පූර්ණ නිවැරදි කළ bot.py කේතය:
-GitHub හි bot.py ගොනුව විවෘත කර සම්පූර්ණ කේතය Replace කර Commit changes කරන්න:
 import os
 import re
 import random
@@ -73,8 +61,8 @@ PRIMARY_AD_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA
 
 PORT = int(os.environ.get("PORT", "8080"))
 
-FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "3600")) # 1 Hour
-VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "21600")) # 6 Hours
+FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "3600"))
+VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "21600"))
 
 app = Client(
     "all_in_one_movie_bot",
@@ -96,7 +84,7 @@ peers_col = db_client["MovieDB"]["channel_peers"]
 awaiting_request = set()
 
 # =========================================================
-# WEB SERVER & SAME-PAGE AD GATE (0 BANDWIDTH)
+# WEB SERVER & SAME-PAGE AD GATE
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -1017,4 +1005,3 @@ async def main():
 
 if __name__ == "__main__":
     app.run(main())
-
