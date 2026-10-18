@@ -55,16 +55,15 @@ BANK_DETAILS = os.environ.get(
 )
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
-OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "").strip()
+BASE_URL = os.environ.get("BASE_URL", "").rstrip("/") # e.g. https://your-service.onrender.com
 
 ADSTERRA_DIRECT_LINK = os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com").strip()
 MONETAG_STREAM_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
 
 PORT = int(os.environ.get("PORT", "8080"))
 
-# Auto-delete durations: Free Users = 1 Hour (3600s), VIP Users = 6 Hours (21600s)
-FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "3600"))
-VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "21600"))
+FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "3600")) # 1 Hour
+VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "21600")) # 6 Hours
 
 app = Client(
     "all_in_one_movie_bot",
@@ -83,11 +82,46 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 peers_col = db_client["MovieDB"]["channel_peers"]
 
-# Temporary ad clicks tracker: {user_id: {"step1_start": timestamp, "step1_done": bool, "step2_start": timestamp}}
-user_ad_sessions = {}
+# Track genuine verified ad redirects from web server
+verified_ad_clicks = {}
 
 # =========================================================
-# PERMANENT PEER RESOLVER FOR STORAGE
+# WEB SERVER & AD REDIRECT ENGINE (STRICT AD ENFORCEMENT)
+# =========================================================
+routes = web.RouteTableDef()
+
+@routes.get("/")
+async def root_ping(request):
+    return web.Response(text="Cinex LK Bot Engine Online", status=200)
+
+@routes.get("/ad1/{user_id}/{msg_id}")
+async def redirect_ad1(request):
+    try:
+        user_id = int(request.match_info['user_id'])
+        msg_id = int(request.match_info['msg_id'])
+        verified_ad_clicks[f"{user_id}_{msg_id}_ad1"] = datetime.utcnow()
+        target_ad = ADSTERRA_DIRECT_LINK if ADSTERRA_DIRECT_LINK else "https://google.com"
+        raise web.HTTPFound(location=target_ad)
+    except web.HTTPFound:
+        raise
+    except Exception:
+        return web.Response(text="Invalid Request", status=400)
+
+@routes.get("/ad2/{user_id}/{msg_id}")
+async def redirect_ad2(request):
+    try:
+        user_id = int(request.match_info['user_id'])
+        msg_id = int(request.match_info['msg_id'])
+        verified_ad_clicks[f"{user_id}_{msg_id}_ad2"] = datetime.utcnow()
+        target_ad = MONETAG_STREAM_LINK if MONETAG_STREAM_LINK else ADSTERRA_DIRECT_LINK
+        raise web.HTTPFound(location=target_ad)
+    except web.HTTPFound:
+        raise
+    except Exception:
+        return web.Response(text="Invalid Request", status=400)
+
+# =========================================================
+# PEER RESOLUTION & TELEGRAM BOT HELPERS
 # =========================================================
 async def save_peer_to_db(chat_id: int, access_hash: int):
     try:
@@ -116,9 +150,6 @@ async def restore_storage_peer():
     except Exception:
         pass
 
-# =========================================================
-# TELEGRAM STARS INVOICE SENDER
-# =========================================================
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     data = {
@@ -134,20 +165,17 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
             async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 return await resp.json()
     except Exception as e:
-        print(f"⚠️ Stars Invoice HTTP Error: {e}")
+        print(f"⚠️ Stars Invoice Error: {e}")
         return None
 
 # =========================================================
-# FILE SENDER WITH DYNAMIC AUTO-DELETE (1 HOUR vs 6 HOURS)
+# FILE SENDER WITH DYNAMIC TIMER (1 HOUR vs 6 HOURS)
 # =========================================================
 async def auto_delete_file_task(chat_id: int, message_ids: list, delay: int, delete_text: str):
     await asyncio.sleep(delay)
     try:
         await app.delete_messages(chat_id=chat_id, message_ids=message_ids)
-        await app.send_message(
-            chat_id=chat_id,
-            text=delete_text
-        )
+        await app.send_message(chat_id=chat_id, text=delete_text)
     except Exception:
         pass
 
@@ -160,19 +188,18 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
     time_label = "පැය 6" if is_vip else "පැය 1"
 
     warn_text = (
-        "⚠️ **විශේෂ අවවාදයයි (Important Note):**\n\n"
-        f"ප්‍රකාශන හිමිකම් ආරක්ෂාව හේතුවෙන් මෙම වීඩියෝ පටය තවත් **{time_label} කින් මෙම Chat එකෙන් ස්වයංක්‍රීයව මැකී යනු ඇත.**\n\n"
-        "📌 **ඔබ කළ යුතු දේ:**\n"
-        "මෙම File එක දැන්ම ඔබගේ **Saved Messages** වෙත හෝ වෙනත් ඕනෑම Chat/Channel එකකට **Forward / Share කර තබා ගන්න.**\n"
-        "*(එවිට මෙතැනින් මැකී ගියද ඔබ Share කරගත් තැනින් ඕනෑම වෙලාවක Download කර නැරඹිය හැක!)*"
+        "⚡ **Auto-Download Started (ස්වයංක්‍රීයව බාගත වීම ආරම්භ විය):**\n\n"
+        "🎬 මෙම වීඩියෝව ඔබගේ Telegram යෙදුම හරහා **පසුබිමින් Auto-Download වේ.**\n\n"
+        f"⚠️ **අවවාදයයි:** ප්‍රකාශන හිමිකම් ආරක්ෂාව මත මෙම වීඩියෝව තවත් **{time_label} කින් මෙතැනින් ඉවත් කෙරේ.**\n\n"
+        "📥 **Device එකටම Save කරගැනීමට:**\n"
+        "වීඩියෝ පත උඩ තියෙන **තිත් 3 (Menu) ඔබා 'Save to Downloads' හෝ 'Save to Gallery'** ලබා දෙන්න. "
+        "නැතහොත් ඔබගේ **Saved Messages** වෙත Share කර තබා ගන්න!"
     )
-
     delete_notification = f"🗑️ **ප්‍රකාශන හිමිකම් ආරක්ෂාව (Copyright Protection) හේතුවෙන් පෙර එවන ලද වීඩියෝ පටය {time_label} අවසානයේ Chat එකෙන් ඉවත් කරන ලදී.**"
 
     try:
         sent_msg = await app.copy_message(chat_id=chat_id, from_chat_id=target_storage, message_id=message_id)
-    except Exception as e:
-        print(f"⚠️ Pyrogram direct copy failed: {e}. Trying raw bot api...")
+    except Exception:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
         payload = {"chat_id": int(chat_id), "from_chat_id": int(str(STORAGE_CHANNEL)), "message_id": int(message_id)}
         try:
@@ -196,7 +223,7 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
         return False
 
 # =========================================================
-# CHANNEL MEMBERSHIP VERIFIER
+# CHANNEL ACCESS VERIFICATION
 # =========================================================
 async def is_member(client: Client, chat_target, user_id: int) -> bool:
     if not chat_target:
@@ -264,24 +291,6 @@ async def is_vip_user(user_id: int) -> bool:
         return await is_member(app, VIP_CHANNEL, user_id)
     return False
 
-def parse_movie_query(filename: str):
-    name = re.sub(r"\.(mp4|mkv|avi|webm|mov)$", "", filename, flags=re.IGNORECASE)
-    name = re.sub(r"\[.*?\]|\(.*?\)", "", name)
-    name = re.sub(r"(1080p|720p|480p|2160p|4k|BluRay|WEB-DL|HDRip|x264|x265|HEVC|AAC|DDP|ESub)", "", name, flags=re.IGNORECASE)
-    name = name.replace(".", " ").replace("_", " ").strip()
-    match_year = re.search(r"\b(19\d\d|20\d\d)\b", name)
-    year = match_year.group(1) if match_year else None
-    title = re.sub(r"\b" + year + r"\b", "", name).strip() if year else name.strip()
-    return title, year
-
-# =========================================================
-# WEB SERVER FOR RENDER PING (ZERO BANDWIDTH)
-# =========================================================
-routes = web.RouteTableDef()
-@routes.get("/")
-async def root_ping(request):
-    return web.Response(text="Cinex LK Engine Online", status=200)
-
 # =========================================================
 # AUTO-POST STORAGE TO CHANNELS
 # =========================================================
@@ -327,7 +336,6 @@ async def handle_storage_upload(client: Client, message: Message):
         vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
         vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
-        # Main Channel (Fast Download Ads flow)
         main_buttons = [
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
             [
@@ -337,7 +345,6 @@ async def handle_storage_upload(client: Client, message: Message):
         ]
         main_markup = InlineKeyboardMarkup(main_buttons)
 
-        # VIP Channel (Direct File Only)
         vip_markup = {
             "inline_keyboard": [
                 [{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]
@@ -365,17 +372,21 @@ async def handle_storage_upload(client: Client, message: Message):
         print(f"❌ Storage Upload error: {e}")
 
 # =========================================================
-# 2-STEP ADS VERIFICATION ENGINE (AUTO-DOWNLOADS ON FINISH)
+# 2-STEP ADS STRICT ENFORCEMENT ENGINE
 # =========================================================
-def get_step1_markup(msg_id: int):
+def get_step1_markup(user_id: int, msg_id: int):
+    # Route through bot server to register genuine ad click
+    ad1_url = f"{BASE_URL}/ad1/{user_id}/{msg_id}" if BASE_URL else ADSTERRA_DIRECT_LINK
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 Open Ad 1 (Required)", url=ADSTERRA_DIRECT_LINK)],
+        [InlineKeyboardButton("🔓 Step 1: Open Ad 1 (Required)", url=ad1_url)],
         [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
     ])
 
-def get_step2_markup(msg_id: int):
+def get_step2_markup(user_id: int, msg_id: int):
+    # Route through bot server to register genuine ad click
+    ad2_url = f"{BASE_URL}/ad2/{user_id}/{msg_id}" if BASE_URL else MONETAG_STREAM_LINK
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 Open Ad 2 (Required)", url=MONETAG_STREAM_LINK)],
+        [InlineKeyboardButton("🔓 Step 2: Open Ad 2 (Required)", url=ad2_url)],
         [InlineKeyboardButton("✅ Verify Step 2 & Auto Download", callback_data=f"chkstep2_{msg_id}")]
     ])
 
@@ -384,61 +395,63 @@ async def handle_step1_verify(client: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
     msg_id = int(callback.data.split("_")[1])
 
-    session = user_ad_sessions.get(user_id, {})
-    if "step1_start" not in session:
-        session["step1_start"] = datetime.utcnow()
-        user_ad_sessions[user_id] = session
-        await callback.answer("⚠️ කරුණාකර 'Open Ad 1' ඔබා තත්පර 8ක් රැඳී සිට නැවත Verify කරන්න.", show_alert=True)
+    key = f"{user_id}_{msg_id}_ad1"
+    ad_click_time = verified_ad_clicks.get(key)
+
+    # If user never clicked the ad URL
+    if not ad_click_time:
+        await callback.answer("⚠️ ඔබ Ad 1 විවෘත කර නොමැත! කරුණාකර 'Open Ad 1' ඔබන්න.", show_alert=True)
         return
 
-    elapsed = (datetime.utcnow() - session["step1_start"]).total_seconds()
+    # Must wait at least 8 seconds after opening the ad
+    elapsed = (datetime.utcnow() - ad_click_time).total_seconds()
     if elapsed < 8:
         await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් Ad එක නරඹන්න.", show_alert=True)
         return
 
     await callback.answer("🎉 Step 1 Verified!")
-    session["step1_done"] = True
-    session["step2_start"] = datetime.utcnow()
-    user_ad_sessions[user_id] = session
 
     text = (
         "🎬 **Download Verification (Step 2 of 2):**\n\n"
-        "1. පහත **'Open Ad 2'** ඔබන්න.\n"
+        "1. පහත **'Step 2: Open Ad 2'** ඔබන්න.\n"
         "2. තත්පර 8ක් Ad එක බලා නැවත පැමිණ **'Verify Step 2 & Auto Download'** ඔබන්න.\n\n"
-        "*(දෙවන පියවරෙන් පසු File එක ස්වයංක්‍රීයව Send වේ)*"
+        "*(දෙවන පියවරෙන් පසු File එක කෙලින්ම Auto-Download වීම ආරම්භ වේ)*"
     )
-    await callback.message.edit_text(text, reply_markup=get_step2_markup(msg_id))
+    await callback.message.edit_text(text, reply_markup=get_step2_markup(user_id, msg_id))
 
 @app.on_callback_query(filters.regex(r"^chkstep2_"))
 async def handle_step2_verify(client: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
     msg_id = int(callback.data.split("_")[1])
 
-    session = user_ad_sessions.get(user_id, {})
-    if not session.get("step1_done"):
-        await callback.answer("⚠️ පළමුව පළමු පියවර සම්පූර්ණ කරන්න.", show_alert=True)
+    key1 = f"{user_id}_{msg_id}_ad1"
+    key2 = f"{user_id}_{msg_id}_ad2"
+
+    if not verified_ad_clicks.get(key1):
+        await callback.answer("⚠️ පළමු පියවර සම්පූර්ණ කර නොමැත.", show_alert=True)
         return
 
-    if "step2_start" not in session:
-        session["step2_start"] = datetime.utcnow()
-        user_ad_sessions[user_id] = session
-        await callback.answer("⚠️ කරුණාකර 'Open Ad 2' ඔබා තත්පර 8ක් රැඳී සිටින්න.", show_alert=True)
+    ad2_click_time = verified_ad_clicks.get(key2)
+    if not ad2_click_time:
+        await callback.answer("⚠️ ඔබ Ad 2 විවෘත කර නොමැත! කරුණාකර 'Open Ad 2' ඔබන්න.", show_alert=True)
         return
 
-    elapsed = (datetime.utcnow() - session["step2_start"]).total_seconds()
+    elapsed = (datetime.utcnow() - ad2_click_time).total_seconds()
     if elapsed < 8:
         await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් Ad එක නරඹන්න.", show_alert=True)
         return
 
-    await callback.answer("🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය Auto Download වෙමින් පවතී...")
+    await callback.answer("🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය එවමින් පවතී...")
     try:
         await callback.message.delete()
     except Exception:
         pass
 
-    user_ad_sessions.pop(user_id, None)
+    # Cleanup verification tokens
+    verified_ad_clicks.pop(key1, None)
+    verified_ad_clicks.pop(key2, None)
+
     await client.send_message(chat_id=user_id, text="🎬 **දැන්වීම් 2ම සාර්ථකව අවසන් විය! මෙන්න ඔබගේ චිත්‍රපටය:**")
-    # Main Channel free users receive file with 1-HOUR auto-delete timer
     await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=False)
 
 # =========================================================
@@ -450,23 +463,20 @@ async def handle_start(client: Client, message: Message):
     param = text.split()[1] if len(text.split()) > 1 else ""
     user_id = message.from_user.id
 
-    # 1. VIP DIRECT FILE REQUEST -> ZERO ADS (6-HOUR AUTO DELETE)
+    # VIP Direct File Handler
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ චිත්‍රපටය:")
         await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
         return
 
-    # 2. DUAL FSUB CHECK
+    # Membership verification
     if not await check_user_access(client, user_id):
         markup = await get_dual_fsub_buttons(client, param)
-        await message.reply_text(
-            "🔒 **ප්‍රවේශය සත්‍යාපනය කර නොමැත!**\n\nචිත්‍රපට ලබා ගැනීමට ප්‍රථමයෙන් පහත Channels වලට Join වන්න.",
-            reply_markup=markup
-        )
+        await message.reply_text("🔒 **ප්‍රවේශය සත්‍යාපනය කර නොමැත!**\n\nචිත්‍රපට ලබා ගැනීමට ප්‍රථමයෙන් අපගේ Channels වලට Join වන්න.", reply_markup=markup)
         return
 
-    # 3. DIRECT STARS SINGLE PURCHASE
+    # Direct Stars Single Purchase
     if param.startswith("buy_"):
         msg_id = param.split("_")[1]
         await send_stars_invoice(
@@ -478,30 +488,27 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # 4. VIP UPGRADE SCREEN
+    # VIP Upgrade
     if param == "vip":
         await message.reply_text("👑 **Cinex LK VIP Pass (Monthly)**", reply_markup=get_vip_selection_markup())
         return
 
-    # 5. 2-STEP ADS DOWNLOAD FLOW (MAIN CHANNEL FREE USERS)
+    # 2-Step Ads Flow
     if param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
         msg_id = int(param.split("_")[1])
         
-        # If user is VIP, bypass ads and give 6-hour file directly
         if await is_vip_user(user_id):
             await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ චිත්‍රපටය:")
             await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
             return
 
-        # Start 2-Step Ad Verification for Free Users
-        user_ad_sessions[user_id] = {"step1_start": datetime.utcnow()}
         step1_text = (
             "🎬 **Download Verification (Step 1 of 2):**\n\n"
             "නොමිලේ Download කරගැනීම සඳහා Ads 2ක් සත්‍යාපනය කළ යුතුය.\n\n"
-            "1. පහත **'Open Ad 1'** ඔබන්න.\n"
+            "1. පහත **'Step 1: Open Ad 1'** ඔබන්න.\n"
             "2. තත්පර 8ක් රැඳී සිට නැවත Bot වෙත පැමිණ **'Verify Step 1'** ඔබන්න."
         )
-        await message.reply_text(step1_text, reply_markup=get_step1_markup(msg_id))
+        await message.reply_text(step1_text, reply_markup=get_step1_markup(user_id, msg_id))
         return
 
     await message.reply_text(
@@ -533,13 +540,12 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
             await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
         elif param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
             msg_id = int(param.split("_")[1])
-            user_ad_sessions[user_id] = {"step1_start": datetime.utcnow()}
             step1_text = (
                 "🎬 **Download Verification (Step 1 of 2):**\n\n"
-                "1. පහත **'Open Ad 1'** ඔබන්න.\n"
+                "1. පහත **'Step 1: Open Ad 1'** ඔබන්න.\n"
                 "2. තත්පර 8ක් රැඳී සිට නැවත Bot වෙත පැමිණ **'Verify Step 1'** ඔබන්න."
             )
-            await client.send_message(chat_id=user_id, text=step1_text, reply_markup=get_step1_markup(msg_id))
+            await client.send_message(chat_id=user_id, text=step1_text, reply_markup=get_step1_markup(user_id, msg_id))
         elif param == "vip":
             await client.send_message(chat_id=user_id, text="👑 **Cinex LK VIP Pass**", reply_markup=get_vip_selection_markup())
         else:
@@ -548,7 +554,7 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
         await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
 
 # =========================================================
-# SEARCH HANDLER (2-STEP ADS ENFORCED FOR FREE USERS)
+# SEARCH HANDLER (ADS ENFORCED)
 # =========================================================
 @app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help", "addvip", "request", "trending", "movielist", "movies"]))
 async def handle_search(client: Client, message: Message):
@@ -592,13 +598,12 @@ async def callback_search_ad(client: Client, callback: CallbackQuery):
         return
 
     await callback.answer()
-    user_ad_sessions[user_id] = {"step1_start": datetime.utcnow()}
     step1_text = (
         "🎬 **Download Verification (Step 1 of 2):**\n\n"
-        "1. පහත **'Open Ad 1'** ඔබන්න.\n"
+        "1. පහත **'Step 1: Open Ad 1'** ඔබන්න.\n"
         "2. තත්පර 8ක් රැඳී සිට නැවත Bot වෙත පැමිණ **'Verify Step 1'** ඔබන්න."
     )
-    await client.send_message(chat_id=user_id, text=step1_text, reply_markup=get_step1_markup(msg_id))
+    await client.send_message(chat_id=user_id, text=step1_text, reply_markup=get_step1_markup(user_id, msg_id))
 
 # =========================================================
 # VIP MANAGEMENT & STARS PAYMENT HANDLER
@@ -754,7 +759,6 @@ async def payment_success(client: Client, message: Message):
     if payload.startswith("single_"):
         msg_id = int(payload.split("_")[1])
         await message.reply_text("🎉 **ගෙවීම සාර්ථකයි!** මෙන්න Movie එක:")
-        # Paid single files receive the 6-hour VIP timer
         await send_file_with_auto_delete(chat_id=message.chat.id, message_id=msg_id, is_vip=True)
 
     elif payload == "vip_sub":
@@ -804,10 +808,8 @@ async def send_movie_list_page(chat_id: int, page: int = 1, edit_message_id: int
     for idx, f in enumerate(movies, start=skip + 1):
         name = f.get("file_name", "Unknown")
         msg_id = f.get("message_id")
-        clean_name, year = parse_movie_query(name)
-        display_label = f"{clean_name} ({year})" if year else clean_name
-        text += f"`{idx}.` 🎬 **{display_label}**\n"
-        buttons.append([InlineKeyboardButton(f"📥 {display_label[:30]}", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")])
+        text += f"`{idx}.` 🎬 **{name}**\n"
+        buttons.append([InlineKeyboardButton(f"📥 {name[:30]}", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")])
 
     nav_buttons = []
     if page > 1:
@@ -850,9 +852,8 @@ async def handle_trending(client: Client, message: Message):
     for idx, f in enumerate(top_movies, 1):
         name = f.get("file_name", "Movie")
         msg_id = f.get("message_id")
-        clean_name, _ = parse_movie_query(name)
-        text += f"{idx}. 🎬 **{clean_name}**\n"
-        buttons.append([InlineKeyboardButton(f"📥 {clean_name[:28]}", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")])
+        text += f"{idx}. 🎬 **{name}**\n"
+        buttons.append([InlineKeyboardButton(f"📥 {name[:28]}", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")])
 
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -888,7 +889,7 @@ async def handle_movie_request(client: Client, message: Message):
 async def main():
     await app.start()
     me = await app.get_me()
-    print(f"🤖 Bot Started Successfully as @{me.username} (Timed Auto-Delete Engine)")
+    print(f"🤖 Bot Started Successfully as @{me.username} (Strict Ad Routing Engine)")
     await restore_storage_peer()
 
     web_app = web.Application()
@@ -897,7 +898,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Keep-Alive server active on port {PORT}")
+    print(f"🌐 Keep-Alive & Ad Redirect server active on port {PORT}")
 
     await idle()
     await app.stop()
