@@ -57,7 +57,6 @@ BANK_DETAILS = os.environ.get(
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 
-# දෙකටම එකම වැඩ කරන Monetag source එක භාවිත කෙරේ
 PRIMARY_AD_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
 
 PORT = int(os.environ.get("PORT", "8080"))
@@ -82,10 +81,8 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 peers_col = db_client["MovieDB"]["channel_peers"]
 
-verified_tokens = set()
-
 # =========================================================
-# WEB SERVER & SAME-PAGE AD VIEWER (0 BANDWIDTH)
+# WEB SERVER & SAME-PAGE AD GATE (0 BANDWIDTH)
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -129,7 +126,6 @@ SAME_PAGE_GATE_HTML = """
             document.getElementById('count').innerText = sec;
             if (sec <= 0) {{
                 clearInterval(timer);
-                fetch('/mark-token/{token}');
                 document.getElementById('count').style.display = 'none';
                 document.getElementById('status-text').innerText = '🎉 සත්‍යාපනය සාර්ථකයි!';
                 document.getElementById('doneBtn').style.display = 'block';
@@ -169,12 +165,6 @@ async def gate_step2(request):
         token=token
     )
     return web.Response(text=html, content_type='text/html')
-
-@routes.get("/mark-token/{token}")
-async def mark_token(request):
-    token = request.match_info['token']
-    verified_tokens.add(token)
-    return web.Response(text="OK", status=200)
 
 # =========================================================
 # PEER RESOLUTION FOR STORAGE
@@ -424,28 +414,52 @@ async def handle_storage_upload(client: Client, message: Message):
         print(f"❌ Storage Upload error: {e}")
 
 # =========================================================
-# START & COMMAND HANDLERS
+# START COMMAND & VERIFICATION DISPATCHER (PRIORITY ROUTING)
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client: Client, message: Message):
-    text = message.text
-    param = text.split()[1] if len(text.split()) > 1 else ""
+    text = message.text or ""
+    parts = text.split()
+    param = parts[1].strip() if len(parts) > 1 else ""
     user_id = message.from_user.id
 
-    # 1. VIP DIRECT FILE HANDLER (ONLY VIA VIP CHANNEL) -> 6-HOUR TIMER
+    # 1. VIP DIRECT FILE REQUEST (FROM VIP CHANNEL) -> NO ADS, 6-HOUR TIMER
     if param.startswith("vipfile_"):
         msg_id = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ චිත්‍රපටය:")
         await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
         return
 
-    # 2. DUAL FSUB MEMBERSHIP VERIFICATION
-    if not await check_user_access(client, user_id):
-        markup = await get_dual_fsub_buttons(client, param)
-        await message.reply_text("🔒 **ප්‍රවේශය සත්‍යාපනය කර නොමැත!**\n\nචිත්‍රපට ලබා ගැනීමට ප්‍රථමයෙන් අපගේ Channels වලට Join වන්න.", reply_markup=markup)
+    # 2. TOKEN 1 VERIFIED -> DISPATCH STEP 2 IMMEDIATELY
+    if param.startswith("tok1_"):
+        try:
+            tok_parts = param.split("_")
+            msg_id = tok_parts[2]
+            step2_url = f"{BASE_URL}/gate/step2/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
+            step2_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔓 Open Sponsor Link 2 (Final Step)", url=step2_url)]
+            ])
+            await message.reply_text(
+                "🎉 **Step 1 සාර්ථකයි!**\n\n"
+                "චිත්‍රපටය ලබාගැනීමට අවසන් පියවර ලෙස පහත **'Open Sponsor Link 2'** ඔබා තත්පර 8ක් රැඳී සිටින්න.",
+                reply_markup=step2_markup
+            )
+        except Exception as e:
+            await message.reply_text("❌ දෝෂයක් සිදුවිය. කරුණාකර නැවත උත්සාහ කරන්න.")
         return
 
-    # 3. DIRECT STARS SINGLE PURCHASE INVOICE
+    # 3. TOKEN 2 VERIFIED -> SEND MOVIE DIRECTLY
+    if param.startswith("tok2_"):
+        try:
+            tok_parts = param.split("_")
+            msg_id = int(tok_parts[2])
+            await message.reply_text("🎉 **පියවර 2ම සාර්ථකව අවසන් විය! මෙන්න ඔබගේ චිත්‍රපටය:**")
+            await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=False)
+        except Exception as e:
+            await message.reply_text("❌ දෝෂයක් සිදුවිය. කරුණාකර නැවත උත්සාහ කරන්න.")
+        return
+
+    # 4. STARS SINGLE PURCHASE INVOICE
     if param.startswith("buy_"):
         msg_id = param.split("_")[1]
         await send_stars_invoice(
@@ -457,50 +471,23 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # 4. VIP UPGRADE SCREEN
+    # 5. VIP UPGRADE SCREEN
     if param == "vip":
         await message.reply_text("👑 **Cinex LK VIP Pass (Monthly)**", reply_markup=get_vip_selection_markup())
         return
 
-    # 5. TOKEN 1 VERIFIED -> SHOW STEP 2
-    if param.startswith("tok1_"):
-        if param not in verified_tokens:
-            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
-            return
-
-        parts = param.split("_")
-        msg_id = parts[2]
-        verified_tokens.remove(param)
-
-        step2_url = f"{BASE_URL}/gate/step2/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
-        step2_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔓 Open Sponsor Link 2 (Final Step)", url=step2_url)]
-        ])
+    # 6. DUAL FSUB MEMBERSHIP VERIFICATION CHECK
+    if not await check_user_access(client, user_id):
+        markup = await get_dual_fsub_buttons(client, param)
         await message.reply_text(
-            "🎉 **Step 1 සාර්ථකයි!**\n\n"
-            "චිත්‍රපටය ලබාගැනීමට අවසන් පියවර ලෙස පහත **'Open Sponsor Link 2'** ඔබා තත්පර 8 සම්පූර්ණ කරන්න.",
-            reply_markup=step2_markup
+            "🔒 **ප්‍රවේශය සත්‍යාපනය කර නොමැත!**\n\nචිත්‍රපට ලබා ගැනීමට ප්‍රථමයෙන් පහත Channels වලට Join වන්න.",
+            reply_markup=markup
         )
-        return
-
-    # 6. TOKEN 2 VERIFIED -> AUTO SEND MOVIE
-    if param.startswith("tok2_"):
-        if param not in verified_tokens:
-            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
-            return
-
-        parts = param.split("_")
-        msg_id = int(parts[2])
-        verified_tokens.remove(param)
-
-        await message.reply_text("🎉 **පියවර 2ම සාර්ථකව අවසන් විය! මෙන්න ඔබගේ චිත්‍රපටය:**")
-        await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=False)
         return
 
     # 7. MAIN CHANNEL FREE DOWNLOAD INITIATOR (STEP 1)
     if param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
         msg_id = int(param.split("_")[1])
-
         step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
         step1_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
@@ -512,6 +499,7 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
+    # DEFAULT ROOT WELCOME
     await message.reply_text(
         "👋 **සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!**\n\n"
         "🔍 **චිත්‍රපට සෙවීමට:** Movie එකේ නම type කර එවන්න.\n"
