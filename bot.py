@@ -57,8 +57,8 @@ BANK_DETAILS = os.environ.get(
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 
-ADSTERRA_DIRECT_LINK = os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com").strip()
-MONETAG_STREAM_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
+# දෙකටම එකම වැඩ කරන Monetag source එක භාවිත කෙරේ
+PRIMARY_AD_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
 
 PORT = int(os.environ.get("PORT", "8080"))
 
@@ -85,11 +85,11 @@ peers_col = db_client["MovieDB"]["channel_peers"]
 verified_tokens = set()
 
 # =========================================================
-# HARDENED ANTI-POPUP-BLOCKER GATE HTML (0 BANDWIDTH)
+# WEB SERVER & SAME-PAGE AD VIEWER (0 BANDWIDTH)
 # =========================================================
 routes = web.RouteTableDef()
 
-HARDENED_GATE_HTML = """
+SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -97,71 +97,44 @@ HARDENED_GATE_HTML = """
     <title>Sponsor Verification - Cinex LK</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body {{ margin:0; background:#0b1118; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:white; display:flex; justify-content:center; align-items:center; min-height:100vh; }}
-        .box {{ background:#16222f; padding:30px 20px; border-radius:18px; text-align:center; max-width:360px; width:90%; border:1px solid #233446; box-shadow:0 12px 35px rgba(0,0,0,0.5); }}
-        .badge {{ background:#233a50; color:#5da9e9; font-size:12px; font-weight:700; padding:6px 12px; border-radius:20px; display:inline-block; margin-bottom:15px; letter-spacing:1px; }}
-        h2 {{ margin:0 0 10px; font-size:20px; }}
-        p {{ color:#8ea2b5; font-size:13px; line-height:1.5; margin:0 0 20px; }}
-        .circle {{ width:75px; height:75px; border-radius:50%; background:#0b1118; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; margin:0 auto 20px; font-size:28px; font-weight:bold; color:#5da9e9; }}
-        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:14px; border-radius:12px; font-weight:bold; font-size:15px; width:100%; box-sizing:border-box; cursor:pointer; }}
-        .start-btn {{ display:block; background:#3b82f6; color:white; text-decoration:none; padding:14px; border-radius:12px; font-weight:bold; font-size:15px; width:100%; box-sizing:border-box; border:none; cursor:pointer; margin-bottom:15px; }}
-        .alert-box {{ display:none; background:#4a151b; border:1px solid #dc3545; padding:12px; border-radius:12px; color:#ffc9c9; margin-bottom:15px; font-size:12px; line-height:1.4; text-align:left; }}
+        * {{ box-sizing: border-box; }}
+        body, html {{ margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }}
+        #header-bar {{ height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }}
+        .step-label {{ font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }}
+        .countdown-wrap {{ display:flex; align-items:center; gap:8px; }}
+        .count-circle {{ width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }}
+        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; }}
+        .btn:hover {{ background:#268d46; }}
+        #ad-frame {{ width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }}
     </style>
 </head>
 <body>
-    <div class="box">
-        <div class="badge">STEP {step} OF 2</div>
-        <h2>Sponsor Verification</h2>
-        
-        <div class="alert-box" id="blockAlert">
-            ⚠️ <b>Pop-up / AdBlock Blocked!</b><br>
-            ඔබගේ Browser එක මඟින් Sponsor පිටුව Block කර ඇත. කරුණාකර URL Bar එක උඩ ඇති Pop-up icon එක ඔබා <b>"Always allow pop-ups"</b> ලබා දෙන්න (හෝ AdBlocker Off කරන්න).
+    <div id="header-bar">
+        <div>
+            <div class="step-label">STEP {step} OF 2</div>
+            <div style="font-size:13px; color:#cfd8dc;" id="status-text">Ad එක නරඹමින් තත්පර 8ක් රැඳී සිටින්න...</div>
         </div>
-
-        <p id="msg">පහත නිල් පාට බොත්තම ඔබා Sponsor පිටුව විවෘත කරන්න. තත්පර 8ක් අවසානයේ Download Link එක ලැබෙනු ඇත.</p>
-        
-        <button id="openAdBtn" class="start-btn" onclick="startAdFlow()">🚀 Open Sponsor & Start (8s)</button>
-
-        <div class="circle" id="count" style="display:none;">8</div>
-        <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}">✅ Return to Telegram Bot</a>
+        <div class="countdown-wrap">
+            <div class="count-circle" id="count">8</div>
+            <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+        </div>
     </div>
+    
+    <iframe id="ad-frame" src="{ad_url}" sandbox="allow-forms allow-scripts allow-same-origin allow-popups"></iframe>
 
     <script>
-        const targetAd = "{ad_url}";
-        let timerStarted = false;
         let sec = 8;
-
-        function startAdFlow() {{
-            // Attempt to open the ad window
-            let adWindow = window.open(targetAd, '_blank');
-
-            // Check if browser blocked the popup
-            if (!adWindow || adWindow.closed || typeof adWindow.closed === 'undefined') {{
-                document.getElementById('blockAlert').style.display = 'block';
-                return;
+        const timer = setInterval(() => {{
+            sec--;
+            document.getElementById('count').innerText = sec;
+            if (sec <= 0) {{
+                clearInterval(timer);
+                fetch('/mark-token/{token}');
+                document.getElementById('count').style.display = 'none';
+                document.getElementById('status-text').innerText = '🎉 සත්‍යාපනය සාර්ථකයි!';
+                document.getElementById('doneBtn').style.display = 'block';
             }}
-
-            // If popup is successful, hide alert and start the countdown
-            document.getElementById('blockAlert').style.display = 'none';
-            document.getElementById('openAdBtn').style.display = 'none';
-            document.getElementById('count').style.display = 'flex';
-            document.getElementById('msg').innerText = 'කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න...';
-
-            if (!timerStarted) {{
-                timerStarted = true;
-                const timer = setInterval(() => {{
-                    sec--;
-                    document.getElementById('count').innerText = sec;
-                    if (sec <= 0) {{
-                        clearInterval(timer);
-                        fetch('/mark-token/{token}');
-                        document.getElementById('count').style.display = 'none';
-                        document.getElementById('msg').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! පහත Button එක ඔබන්න.';
-                        document.getElementById('doneBtn').style.display = 'block';
-                    }}
-                }}, 1000);
-            }}
-        }}
+        }}, 1000);
     </script>
 </body>
 </html>
@@ -176,9 +149,9 @@ async def gate_step1(request):
     user_id = request.match_info['user_id']
     msg_id = request.match_info['msg_id']
     token = f"tok1_{user_id}_{msg_id}"
-    html = HARDENED_GATE_HTML.format(
+    html = SAME_PAGE_GATE_HTML.format(
         step="1",
-        ad_url=ADSTERRA_DIRECT_LINK,
+        ad_url=PRIMARY_AD_LINK,
         bot_username=BOT_USERNAME,
         token=token
     )
@@ -189,9 +162,9 @@ async def gate_step2(request):
     user_id = request.match_info['user_id']
     msg_id = request.match_info['msg_id']
     token = f"tok2_{user_id}_{msg_id}"
-    html = HARDENED_GATE_HTML.format(
+    html = SAME_PAGE_GATE_HTML.format(
         step="2",
-        ad_url=MONETAG_STREAM_LINK,
+        ad_url=PRIMARY_AD_LINK,
         bot_username=BOT_USERNAME,
         token=token
     )
@@ -492,14 +465,14 @@ async def handle_start(client: Client, message: Message):
     # 5. TOKEN 1 VERIFIED -> SHOW STEP 2
     if param.startswith("tok1_"):
         if param not in verified_tokens:
-            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර Pop-up Allow කර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
+            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
             return
 
         parts = param.split("_")
         msg_id = parts[2]
         verified_tokens.remove(param)
 
-        step2_url = f"{BASE_URL}/gate/step2/{user_id}/{msg_id}" if BASE_URL else MONETAG_STREAM_LINK
+        step2_url = f"{BASE_URL}/gate/step2/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
         step2_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔓 Open Sponsor Link 2 (Final Step)", url=step2_url)]
         ])
@@ -513,7 +486,7 @@ async def handle_start(client: Client, message: Message):
     # 6. TOKEN 2 VERIFIED -> AUTO SEND MOVIE
     if param.startswith("tok2_"):
         if param not in verified_tokens:
-            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර Pop-up Allow කර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
+            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
             return
 
         parts = param.split("_")
@@ -528,14 +501,13 @@ async def handle_start(client: Client, message: Message):
     if param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
         msg_id = int(param.split("_")[1])
 
-        step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else ADSTERRA_DIRECT_LINK
+        step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
         step1_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
         ])
         await message.reply_text(
             "🎬 **Download Verification (Step 1 of 2):**\n\n"
-            "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබන්න.\n\n"
-            "*(කරුණාකර Browser එකේ Pop-ups Allow කර තබා ගන්න)*",
+            "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා එකම පිටුවේ තත්පර 8ක් රැඳී සිටින්න.",
             reply_markup=step1_markup
         )
         return
@@ -569,7 +541,7 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
             await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
         elif param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
             msg_id = int(param.split("_")[1])
-            step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else ADSTERRA_DIRECT_LINK
+            step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
             step1_markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
             ])
@@ -624,7 +596,7 @@ async def callback_search_ad(client: Client, callback: CallbackQuery):
     msg_id = int(callback.data.split("_")[2])
 
     await callback.answer()
-    step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else ADSTERRA_DIRECT_LINK
+    step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
     step1_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
     ])
@@ -927,7 +899,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Hardened Ad Gate Live on port {PORT}")
+    print(f"🌐 Same-Page Embedded Ad Gate Live on port {PORT}")
 
     await idle()
     await app.stop()
