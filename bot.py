@@ -268,6 +268,11 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
                         warn_msg = await app.send_message(chat_id=chat_id, text=warn_text)
                         asyncio.create_task(auto_delete_file_task(chat_id, [sent_msg_id, warn_msg.id], delay, delete_notification))
                         return True
+                    else:
+                        # Message no longer exists
+                        await files_col.delete_one({"message_id": int(message_id)})
+                        await app.send_message(chat_id=chat_id, text="❌ **මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.**")
+                        return False
         except Exception:
             pass
 
@@ -276,7 +281,6 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
         asyncio.create_task(auto_delete_file_task(chat_id, [sent_msg.id, warn_msg.id], delay, delete_notification))
         return True
     else:
-        # File has been deleted from storage channel
         await files_col.delete_one({"message_id": int(message_id)})
         await app.send_message(chat_id=chat_id, text="❌ **මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.**")
         return False
@@ -445,7 +449,7 @@ async def handle_start(client: Client, message: Message):
     param = parts[1].strip() if len(parts) > 1 else ""
     user_id = message.from_user.id
 
-    # 1. VIP DIRECT FILE REQUEST (FROM VIP CHANNEL)
+    # 1. VIP DIRECT FILE REQUEST
     if param.startswith("vipfile_"):
         try:
             msg_id = int(param.split("_")[1])
@@ -455,7 +459,7 @@ async def handle_start(client: Client, message: Message):
         except Exception:
             pass
 
-    # 2. TOKEN 1 VERIFIED (FROM WEB GATE STEP 1)
+    # 2. TOKEN 1 VERIFIED
     if param.startswith("tok1_"):
         try:
             tok_parts = param.split("_")
@@ -473,7 +477,7 @@ async def handle_start(client: Client, message: Message):
         except Exception:
             pass
 
-    # 3. TOKEN 2 VERIFIED (FROM WEB GATE STEP 2)
+    # 3. TOKEN 2 VERIFIED
     if param.startswith("tok2_"):
         try:
             tok_parts = param.split("_")
@@ -511,7 +515,7 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # 7. MAIN CHANNEL FREE DOWNLOAD INITIATOR (MANDATORY ADS FLOW)
+    # 7. MAIN CHANNEL FREE DOWNLOAD INITIATOR
     if param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
         try:
             msg_id = int(param.split("_")[1])
@@ -575,6 +579,36 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
         await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
 
 # =========================================================
+# RELIABLE STORAGE EXISTENCE CHECK (OFFICIAL TELEGRAM COPY TEST)
+# =========================================================
+async def check_file_exists_in_storage(message_id: int) -> bool:
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
+        payload = {
+            "chat_id": int(str(STORAGE_CHANNEL)),
+            "from_chat_id": int(str(STORAGE_CHANNEL)),
+            "message_id": int(message_id)
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    # Delete the test-copied message immediately
+                    temp_id = res.get("result", {}).get("message_id")
+                    del_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
+                    await session.post(del_url, json={"chat_id": int(str(STORAGE_CHANNEL)), "message_id": temp_id})
+                    return True
+                else:
+                    err_desc = str(res.get("description", "")).lower()
+                    if "message to copy not found" in err_desc or "bad request" in err_desc:
+                        # Message was deleted from storage channel
+                        await files_col.delete_one({"message_id": int(message_id)})
+                        return False
+                    return True
+    except Exception:
+        return True
+
+# =========================================================
 # MOVIE LIST WITH REAL-TIME STORAGE EXISTENCE VERIFICATION
 # =========================================================
 @app.on_message(filters.command(["movielist", "movies"]) & filters.private)
@@ -585,31 +619,22 @@ async def handle_movie_list(client: Client, message: Message):
         return
     await send_movie_list_page(message.chat.id, message.from_user.id, page=1)
 
-async def check_file_exists_in_storage(message_id: int) -> bool:
-    target_storage = int(STORAGE_CHANNEL) if str(STORAGE_CHANNEL).lstrip("-").isdigit() else STORAGE_CHANNEL
-    try:
-        msg = await app.get_messages(chat_id=target_storage, message_ids=int(message_id))
-        if msg and not msg.empty and (msg.video or msg.document):
-            return True
-        await files_col.delete_one({"message_id": int(message_id)})
-        return False
-    except Exception:
-        return True
-
 async def send_movie_list_page(chat_id: int, user_id: int, page: int = 1, edit_message_id: int = None):
     PAGE_SIZE = 10
     skip = (page - 1) * PAGE_SIZE
-    
-    total_movies = await files_col.count_documents({})
-    total_pages = max(1, (total_movies + PAGE_SIZE - 1) // PAGE_SIZE)
 
-    cursor = files_col.find({}).sort("_id", -1).skip(skip).limit(PAGE_SIZE)
-    raw_movies = await cursor.to_list(length=PAGE_SIZE)
+    cursor = files_col.find({}).sort("_id", -1).skip(skip).limit(PAGE_SIZE * 2)
+    raw_movies = await cursor.to_list(length=PAGE_SIZE * 2)
 
     valid_movies = []
     for f in raw_movies:
         if await check_file_exists_in_storage(f.get("message_id")):
             valid_movies.append(f)
+        if len(valid_movies) == PAGE_SIZE:
+            break
+
+    total_movies = await files_col.count_documents({})
+    total_pages = max(1, (total_movies + PAGE_SIZE - 1) // PAGE_SIZE)
 
     if not valid_movies:
         text = "📁 **දැනට චිත්‍රපට කිසිවක් එක් කර නොමැත.**"
@@ -706,7 +731,6 @@ async def admin_sync_movies(client: Client, message: Message):
         return
 
     status_msg = await message.reply_text("🔄 Storage Channel එක පරීක්ෂා කරමින් පවතී...")
-    target_storage = int(STORAGE_CHANNEL) if str(STORAGE_CHANNEL).lstrip("-").isdigit() else STORAGE_CHANNEL
     deleted_count = 0
 
     cursor = files_col.find({})
@@ -714,13 +738,9 @@ async def admin_sync_movies(client: Client, message: Message):
 
     for movie in all_movies:
         msg_id = movie.get("message_id")
-        try:
-            chk = await client.get_messages(chat_id=target_storage, message_ids=int(msg_id))
-            if not chk or chk.empty or not (chk.video or chk.document):
-                await files_col.delete_one({"_id": movie["_id"]})
-                deleted_count += 1
-        except Exception:
-            pass
+        exists = await check_file_exists_in_storage(msg_id)
+        if not exists:
+            deleted_count += 1
 
     await status_msg.edit_text(f"✅ Sync සාර්ථකයි! Storage එකේ නොමැති පැරණි Movies `{deleted_count}` ක් Database එකෙන් ඉවත් කරන ලදී.")
 
