@@ -277,7 +277,6 @@ async def is_vip_user(user_id: int) -> bool:
     doc = await vip_users_col.find_one({"user_id": user_id, "expiry_date": {"$gt": datetime.utcnow()}})
     if doc:
         return True
-    # Also check if user is in VIP channel directly
     if VIP_CHANNEL:
         return await is_member(app, VIP_CHANNEL, user_id)
     return False
@@ -304,7 +303,7 @@ async def notify_requested_users(client: Client, file_name: str, msg_id: int):
             text = (
                 f"🎉 **සුභ ආරංචියක්! ඔබ කලින් ඉල්ලූ චිත්‍රපටය දැන් එක් කර ඇත.**\n\n"
                 f"🎬 **චිත්‍රපටය:** `{file_name}`\n\n"
-                f"කෙලින්ම බාගත කිරීමට පහත Button එක ඔබන්න."
+                f"බාගත කිරීමට පහත Button එක ඔබන්න."
             )
             try:
                 await client.send_message(chat_id=user_id, text=text, reply_markup=btn)
@@ -325,7 +324,7 @@ async def root_ping(request):
     return web.Response(text="Cinex LK Bot Engine is Live 24/7!", status=200)
 
 # =========================================================
-# 2. AUTO-POST TO MAIN CHANNEL & VIP CHANNEL
+# 2. AUTO-POST TO MAIN CHANNEL (WITH ADS ONLY) & VIP CHANNEL (DIRECT FILE)
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
@@ -362,13 +361,13 @@ async def handle_storage_upload(client: Client, message: Message):
             upsert=True
         )
 
-        get_movie_url = f"https://t.me/{BOT_USERNAME}?start=get_{msg_id}"
-        vip_file_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
+        get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=get_{msg_id}"
+        vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
         vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
-        # Main Channel Markup
+        # Main Channel Markup (Direct download excluded - Ad verification required)
         main_buttons = [
-            [InlineKeyboardButton("📥 Download Movie (Direct File)", url=get_movie_url)],
+            [InlineKeyboardButton("📥 Download Movie (Free Ads)", url=get_movie_ad_url)],
             [
                 InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
                 InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
@@ -376,10 +375,10 @@ async def handle_storage_upload(client: Client, message: Message):
         ]
         main_markup = InlineKeyboardMarkup(main_buttons)
 
-        # VIP Channel Markup (Direct File, 100% No Ads)
+        # VIP Channel Markup (Only Direct Download, 100% No Ads)
         vip_markup = {
             "inline_keyboard": [
-                [{"text": "⚡ Instant Download (Direct File)", "url": vip_file_url}]
+                [{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]
             ]
         }
 
@@ -419,7 +418,7 @@ async def handle_storage_upload(client: Client, message: Message):
                 f"👇 **චිත්‍රපටය ලබාගැනීමට පහත Buttons භාවිතා කරන්න:**"
             )
 
-        # 1. POST TO MAIN CHANNEL
+        # 1. Post to Main Channel
         if MAIN_CHANNEL:
             posted = False
             if poster_bytes:
@@ -437,7 +436,7 @@ async def handle_storage_upload(client: Client, message: Message):
                 except Exception:
                     pass
 
-        # 2. POST TO VIP CHANNEL DIRECTLY
+        # 2. Post to VIP Channel (Direct File Button Only)
         if VIP_CHANNEL:
             await send_tg_api_post(
                 chat_id=VIP_CHANNEL,
@@ -818,7 +817,7 @@ async def movie_list_nav_callback(client: Client, callback: CallbackQuery):
     await send_movie_list_page(chat_id=callback.message.chat.id, page=page, edit_message_id=callback.message.id)
 
 # =========================================================
-# 9. BOT COMMANDS & DELIVERY (ZERO BANDWIDTH)
+# 9. BOT COMMANDS & DELIVERY (NO WATCH ONLINE / AD DELIVERY)
 # =========================================================
 
 COMMANDS_HELP_TEXT = (
@@ -869,7 +868,7 @@ async def process_file_delivery(client: Client, user_id: int, msg_id: int):
         await send_file_with_auto_delete(chat_id=user_id, from_chat_id=STORAGE_CHANNEL, message_id=msg_id)
         return
 
-    # 2. Non-VIP User Delivery with Ad Link
+    # 2. Main Channel Free Users Delivery with Ad Link
     ad_url = ADSTERRA_DIRECT_LINK or MONETAG_STREAM_LINK
     if ad_url:
         unlock_markup = InlineKeyboardMarkup([
@@ -973,7 +972,7 @@ async def handle_search(client: Client, message: Message):
 
         caption = f"🎬 **{file['file_name']}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **ලබාගැනීමට තෝරන්න:**"
         buttons = [
-            [InlineKeyboardButton("📥 Download Movie (Direct File)", callback_data=f"get_{msg_id}")],
+            [InlineKeyboardButton("📥 Download Movie (Free Ads)", callback_data=f"get_{msg_id}")],
             [
                 InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}"),
                 InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", callback_data="buy_vip_pass")
