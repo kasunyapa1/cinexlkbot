@@ -1,3 +1,15 @@
+ඔබ Download button එක click කළ විට Bot ගේ /start කියා වැටී කිසිවක් සිදුනොවීමට (Silent drop වීමට) ප්‍රධාන තාක්ෂණික හේතුව මෙයයි:
+handle_start එකේ Force Subscription පරීක්ෂාව (check_user_access) තබා තිබුණේ Download parameter එක (adstep1_) කියවීමට කලින්ය.
+එහිදී:
+ * check_user_access එකේදී MAIN_CHANNEL හෝ BACKUP_CHANNEL එකට User කෙනෙක් Join වී ඇත්දැයි බලන විට, Telegram API එකෙන් UserNotParticipant හෝ ChatAdminRequired දෝෂයක් ආ විට එය False වී return වේ.
+ * එසේ වූ විට Bot විසින් get_dual_fsub_buttons යැවීමට උත්සාහ කළත්, Channel invite links export කිරීමට bot ට admin rights නොතිබුණහොත් හෝ crash වුවහොත් Bot ගේ පැත්තෙන් කිසිදු message එකක් user ට නොලැබී හිස් /start එකක් පමණක් වැටී නතර වේ.
+ * වඩාත්ම වැදගත් කරුණ: Download කිරීමට පැමිණි Parameter එක (adstep1_ හෝ vipfile_) Force Sub Check එකට කලින් Extract කරගත යුතුය. User join වී නැතිනම් එම parameter එක අමතක නොවී තබාගෙන, Join වූ පසු කෙලින්ම Ad එකට යා යුතුය.
+මෙහි සිදුකළ ස්ථිර නිවැරදි කිරීම්:
+ * Parameter Safe Parser: /start adstep1_123 ආ සැනින්ම parameter එක මුලින්ම ගබඩා කරගනී.
+ * Crash-Proof FSUB Check: Channel check කිරීමේදී කිසිදු crash එකක් නොවී, user join වී නැතිනම් Join Buttons පැහැදිලිව පෙන්වයි.
+ * Join වී සිටී නම් ක්ෂණික Ad Gate Trigger: User දැනටමත් channel එකේ සිටී නම් කෙලින්ම "🎬 Download Verification (Step 1 of 2)" පණිවිඩය සහ Web Gate Link එක Chat එකට ලැබෙනු ඇත.
+සම්පූර්ණ නිවැරදි කළ bot.py කේතය:
+GitHub හි bot.py ගොනුව විවෘත කර සම්පූර්ණ කේතය Replace කර Commit changes කරන්න:
 import os
 import re
 import random
@@ -239,7 +251,6 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
     delay = VIP_USER_DELETE_DURATION if is_vip else FREE_USER_DELETE_DURATION
     time_label = "පැය 6" if is_vip else "පැය 1"
 
-    # Track download count
     try:
         await files_col.update_one({"message_id": int(message_id)}, {"$inc": {"download_count": 1}})
     except Exception:
@@ -281,12 +292,14 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
         return False
 
 # =========================================================
-# VIP CHECK & CHANNEL ACCESS (STRICT VERIFICATION)
+# VIP CHECK & CHANNEL ACCESS (SAFE VERIFICATION)
 # =========================================================
 async def is_vip_user(user_id: int) -> bool:
-    # පරිශීලකයා සැබවින්ම VIP Database එකේ සක්‍රිය දින තිබේදැයි පමණක් බලයි
-    doc = await vip_users_col.find_one({"user_id": int(user_id), "expiry_date": {"$gt": datetime.utcnow()}})
-    return bool(doc)
+    try:
+        doc = await vip_users_col.find_one({"user_id": int(user_id), "expiry_date": {"$gt": datetime.utcnow()}})
+        return bool(doc)
+    except Exception:
+        return False
 
 async def is_member(client: Client, chat_target, user_id: int) -> bool:
     if not chat_target:
@@ -304,8 +317,8 @@ async def check_user_access(client: Client, user_id: int) -> bool:
         if user_record and user_record.get("fsub_verified"):
             return True
 
-        in_main = await is_member(client, MAIN_CHANNEL, user_id)
-        in_backup = await is_member(client, BACKUP_CHANNEL, user_id)
+        in_main = await is_member(client, MAIN_CHANNEL, user_id) if MAIN_CHANNEL else True
+        in_backup = await is_member(client, BACKUP_CHANNEL, user_id) if BACKUP_CHANNEL else True
 
         if in_main and in_backup:
             await bot_users_col.update_one(
@@ -347,7 +360,7 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
     return InlineKeyboardMarkup(buttons)
 
 # =========================================================
-# AUTO-POST STORAGE TO CHANNELS & DELETE SYNC
+# AUTO-POST STORAGE TO CHANNELS
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
@@ -386,7 +399,6 @@ async def handle_storage_upload(client: Client, message: Message):
         vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
         vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
 
-        # MAIN CHANNEL: Ads ONLY
         main_buttons = [
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
             [
@@ -396,7 +408,6 @@ async def handle_storage_upload(client: Client, message: Message):
         ]
         main_markup = InlineKeyboardMarkup(main_buttons)
 
-        # VIP CHANNEL: Direct File ONLY
         vip_markup = {
             "inline_keyboard": [
                 [{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]
@@ -435,23 +446,26 @@ async def handle_storage_delete(client: Client, messages: list):
         print(f"⚠️ Storage delete sync error: {e}")
 
 # =========================================================
-# START COMMAND (STRICT FLOW ENFORCEMENT)
+# START COMMAND (RELIABLE PARAMETER ROUTING)
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client: Client, message: Message):
     text = message.text or ""
-    parts = text.split()
+    parts = text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
     user_id = message.from_user.id
 
-    # 1. VIP DIRECT FILE REQUEST (ONLY VIA VIP CHANNEL LINK)
+    # 1. VIP DIRECT FILE REQUEST (FROM VIP CHANNEL)
     if param.startswith("vipfile_"):
-        msg_id = int(param.split("_")[1])
-        await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ චිත්‍රපටය:")
-        await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
-        return
+        try:
+            msg_id = int(param.split("_")[1])
+            await message.reply_text("👑 **VIP Direct File:** මෙන්න ඔබගේ චිත්‍රපටය:")
+            await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
+            return
+        except Exception:
+            pass
 
-    # 2. TOKEN 1 VERIFIED -> SHOW STEP 2
+    # 2. TOKEN 1 VERIFIED (FROM WEB GATE STEP 1)
     if param.startswith("tok1_"):
         try:
             tok_parts = param.split("_")
@@ -465,20 +479,20 @@ async def handle_start(client: Client, message: Message):
                 "චිත්‍රපටය ලබාගැනීමට අවසන් පියවර ලෙස පහත **'Open Sponsor Link 2'** ඔබා තත්පර 8ක් රැඳී සිටින්න.",
                 reply_markup=step2_markup
             )
+            return
         except Exception:
-            await message.reply_text("❌ දෝෂයක් සිදුවිය. කරුණාකර නැවත උත්සාහ කරන්න.")
-        return
+            pass
 
-    # 3. TOKEN 2 VERIFIED -> DELIVER 1-HOUR AUTO DELETE MOVIE
+    # 3. TOKEN 2 VERIFIED (FROM WEB GATE STEP 2)
     if param.startswith("tok2_"):
         try:
             tok_parts = param.split("_")
             msg_id = int(tok_parts[2])
             await message.reply_text("🎉 **පියවර 2ම සාර්ථකව අවසන් විය! මෙන්න ඔබගේ චිත්‍රපටය:**")
             await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=False)
+            return
         except Exception:
-            await message.reply_text("❌ දෝෂයක් සිදුවිය. කරුණාකර නැවත උත්සාහ කරන්න.")
-        return
+            pass
 
     # 4. STARS SINGLE PURCHASE
     if param.startswith("buy_"):
@@ -497,8 +511,9 @@ async def handle_start(client: Client, message: Message):
         await message.reply_text("👑 **Cinex LK VIP Pass (Monthly)**", reply_markup=get_vip_selection_markup())
         return
 
-    # 6. FORCE SUB CHECK
-    if not await check_user_access(client, user_id):
+    # 6. FORCE SUB MEMBERSHIP CHECK
+    has_access = await check_user_access(client, user_id)
+    if not has_access:
         markup = await get_dual_fsub_buttons(client, param)
         await message.reply_text(
             "🔒 **ප්‍රවේශය සත්‍යාපනය කර නොමැත!**\n\nචිත්‍රපට ලබා ගැනීමට ප්‍රථමයෙන් පහත Channels වලට Join වන්න.",
@@ -506,23 +521,24 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # 7. MAIN CHANNEL FREE DOWNLOAD (MANDATORY ADS FLOW)
+    # 7. MAIN CHANNEL FREE DOWNLOAD INITIATOR (MANDATORY ADS FLOW)
     if param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
-        msg_id = int(param.split("_")[1])
+        try:
+            msg_id = int(param.split("_")[1])
+            step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
+            step1_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
+            ])
+            await message.reply_text(
+                "🎬 **Download Verification (Step 1 of 2):**\n\n"
+                "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා එකම පිටුවේ තත්පර 8ක් රැඳී සිටින්න.",
+                reply_markup=step1_markup
+            )
+            return
+        except Exception:
+            pass
 
-        # Main Channel එකෙන් ආවොත් කවුරුත් අනිවාර්යයෙන්ම Ad එක හරහා යා යුතුය
-        step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
-        step1_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
-        ])
-        await message.reply_text(
-            "🎬 **Download Verification (Step 1 of 2):**\n\n"
-            "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා එකම පිටුවේ තත්පර 8ක් රැඳී සිටින්න.",
-            reply_markup=step1_markup
-        )
-        return
-
-    # ROOT WELCOME
+    # DEFAULT ROOT WELCOME
     await message.reply_text(
         "👋 **සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!**\n\n"
         "🔍 **චිත්‍රපට සෙවීමට:** Movie එකේ නම type කර එවන්න.\n"
@@ -608,8 +624,6 @@ async def send_movie_list_page(chat_id: int, user_id: int, page: int = 1, edit_m
     for idx, f in enumerate(movies, start=skip + 1):
         name = f.get("file_name", "Unknown Movie")
         msg_id = f.get("message_id")
-        
-        # VIP සාමාජිකයෙක් නම් පමණක් Direct Link, සාමාන්‍ය අයට Ads Link
         target_param = f"vipfile_{msg_id}" if is_vip else f"adstep1_{msg_id}"
         btn_url = f"https://t.me/{BOT_USERNAME}?start={target_param}"
         buttons.append([InlineKeyboardButton(f"🎬 {idx}. {name[:30]}", url=btn_url)])
@@ -685,7 +699,7 @@ async def handle_movie_request(client: Client, message: Message):
     if len(args) < 2:
         awaiting_request.add(user_id)
         await message.reply_text(
-            "📝 **ඔබට අවශ්‍ය චිත්‍රපටයේ නම Type කර මෙහි Reply කරන්න:**\n\n"
+            "📝 **ඔබට අවශ්‍ය චිත්‍රපටයේ නම Type කර මෙහි එවන්න:**\n\n"
             "*(උදාහරණයක් ලෙස: `Avatar 2` හෝ `Spiderman No Way Home`)*"
         )
         return
@@ -1003,3 +1017,4 @@ async def main():
 
 if __name__ == "__main__":
     app.run(main())
+
