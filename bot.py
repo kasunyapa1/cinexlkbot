@@ -122,7 +122,7 @@ async def restore_storage_peer():
         pass
 
 # =========================================================
-# TELEGRAM STARS INVOICE (FIXED FOR STARS / XTR)
+# TELEGRAM STARS INVOICE
 # =========================================================
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -131,7 +131,7 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
         "title": title,
         "description": description,
         "payload": payload,
-        "provider_token": "",  # Stars සඳහා අනිවාර්යයෙන්ම empty string විය යුතුය
+        "provider_token": "",
         "currency": "XTR",
         "prices": [{"label": title, "amount": int(stars)}]
     }
@@ -302,7 +302,6 @@ async def handle_storage_upload(client: Client, message: Message):
             upsert=True
         )
 
-        # MAIN CHANNEL BUTTON: Leads directly to AD FLOW
         get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"
         vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
         vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
@@ -350,10 +349,10 @@ async def mark_step1_opened(client: Client, callback: CallbackQuery):
     msg_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
     user_ad_tracker[f"{user_id}_{msg_id}_s1"] = datetime.utcnow()
-    await callback.answer("Ad 1 විවෘත විය. තත්පර 8ක් රැඳී සිට පහත Verify Step 1 ඔබන්න.", show_alert=True)
+    await callback.answer("Link 1 විවෘත විය. තත්පර 8ක් රැඳී සිට පහත Verify Step 1 ඔබන්න.", show_alert=True)
 
     btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Ad 1", url=ADSTERRA_DIRECT_LINK)],
+        [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
         [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
     ])
     await callback.message.edit_reply_markup(reply_markup=btn)
@@ -366,26 +365,26 @@ async def verify_step1(client: Client, callback: CallbackQuery):
 
     start_time = user_ad_tracker.get(key)
     if not start_time:
-        await callback.answer("⚠️ පළමුව '1. I Opened Ad 1' ඔබා තත්පර 8ක් රැඳී සිටින්න!", show_alert=True)
+        await callback.answer("⚠️ පළමුව '1. I Opened Link 1' ඔබා තත්පර 8ක් රැඳී සිටින්න!", show_alert=True)
         return
 
     elapsed = (datetime.utcnow() - start_time).total_seconds()
     if elapsed < 8:
-        await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් Ad 1 නරඹන්න.", show_alert=True)
+        await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් රැඳී සිටින්න.", show_alert=True)
         return
 
     await callback.answer("🎉 Step 1 Verified!")
     user_ad_tracker[f"{user_id}_{msg_id}_s1_done"] = True
 
     step2_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Ad 2 (Monetag)", url=MONETAG_STREAM_LINK)],
-        [InlineKeyboardButton("👆 2. I Opened Ad 2 (Click Here)", callback_data=f"step2_opened_{msg_id}")],
+        [InlineKeyboardButton("🔓 1. Open Sponsor Link 2", url=MONETAG_STREAM_LINK)],
+        [InlineKeyboardButton("👆 2. I Opened Link 2 (Click Here)", callback_data=f"step2_opened_{msg_id}")],
         [InlineKeyboardButton("✅ Verify Step 2 & Get Movie", callback_data=f"chkstep2_{msg_id}")]
     ])
     await callback.message.edit_text(
         "🎬 **Download Verification (Step 2 of 2):**\n\n"
-        "1. පහත **'1. Open Ad 2'** ඔබා Ad එක Open කරන්න.\n"
-        "2. ඉන්පසු **'2. I Opened Ad 2'** ඔබන්න.\n"
+        "1. පහත **'1. Open Sponsor Link 2'** ඔබන්න.\n"
+        "2. ඉන්පසු **'2. I Opened Link 2'** ඔබන්න.\n"
         "3. තත්පර 8ක් රැඳී සිට **'Verify Step 2 & Get Movie'** ඔබන්න.",
         reply_markup=step2_markup
     )
@@ -395,10 +394,10 @@ async def mark_step2_opened(client: Client, callback: CallbackQuery):
     msg_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
     user_ad_tracker[f"{user_id}_{msg_id}_s2"] = datetime.utcnow()
-    await callback.answer("Ad 2 විවෘත විය. තත්පර 8ක් රැඳී සිට පහත Verify Step 2 ඔබන්න.", show_alert=True)
+    await callback.answer("Link 2 විවෘත විය. තත්පර 8ක් රැඳී සිට පහත Verify Step 2 ඔබන්න.", show_alert=True)
 
     btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Ad 2", url=MONETAG_STREAM_LINK)],
+        [InlineKeyboardButton("🔓 1. Open Sponsor Link 2", url=MONETAG_STREAM_LINK)],
         [InlineKeyboardButton("✅ Verify Step 2 & Get Movie", callback_data=f"chkstep2_{msg_id}")]
     ])
     await callback.message.edit_reply_markup(reply_markup=btn)
@@ -414,12 +413,12 @@ async def verify_step2(client: Client, callback: CallbackQuery):
 
     start_time = user_ad_tracker.get(f"{user_id}_{msg_id}_s2")
     if not start_time:
-        await callback.answer("⚠️ පළමුව '2. I Opened Ad 2' ඔබා තත්පර 8ක් රැඳී සිටින්න!", show_alert=True)
+        await callback.answer("⚠️ පළමුව '2. I Opened Link 2' ඔබා තත්පර 8ක් රැඳී සිටින්න!", show_alert=True)
         return
 
     elapsed = (datetime.utcnow() - start_time).total_seconds()
     if elapsed < 8:
-        await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් Ad 2 නරඹන්න.", show_alert=True)
+        await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් රැඳී සිටින්න.", show_alert=True)
         return
 
     await callback.answer("🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය එවමින් පවතී...")
@@ -432,8 +431,7 @@ async def verify_step2(client: Client, callback: CallbackQuery):
     user_ad_tracker.pop(f"{user_id}_{msg_id}_s1_done", None)
     user_ad_tracker.pop(f"{user_id}_{msg_id}_s2", None)
 
-    await client.send_message(chat_id=user_id, text="🎬 **දැන්වීම් 2ම සාර්ථකව අවසන් විය! මෙන්න ඔබගේ චිත්‍රපටය:**")
-    # Free users get 1-Hour Auto Delete
+    await client.send_message(chat_id=user_id, text="🎬 **සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:**")
     await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=False)
 
 # =========================================================
@@ -480,15 +478,15 @@ async def handle_start(client: Client, message: Message):
         msg_id = int(param.split("_")[1])
 
         step1_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔓 1. Open Ad 1 (Adsterra)", url=ADSTERRA_DIRECT_LINK)],
-            [InlineKeyboardButton("👆 2. I Opened Ad 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
+            [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
+            [InlineKeyboardButton("👆 2. I Opened Link 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
             [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
         ])
         step1_text = (
             "🎬 **Download Verification (Step 1 of 2):**\n\n"
-            "නොමිලේ Download කරගැනීම සඳහා Ads 2ක් සත්‍යාපනය කළ යුතුය.\n\n"
-            "1. පහත **'1. Open Ad 1'** ඔබා Ad එක Open කරන්න.\n"
-            "2. ඉන්පසු **'2. I Opened Ad 1'** ඔබන්න.\n"
+            "නොමිලේ Download කරගැනීම සඳහා පියවර 2ක් සත්‍යාපනය කළ යුතුය.\n\n"
+            "1. පහත **'1. Open Sponsor Link 1'** ඔබන්න.\n"
+            "2. ඉන්පසු **'2. I Opened Link 1'** ඔබන්න.\n"
             "3. තත්පර 8ක් රැඳී සිට **'Verify Step 1'** ඔබන්න."
         )
         await message.reply_text(step1_text, reply_markup=step1_markup)
@@ -524,16 +522,16 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
         elif param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
             msg_id = int(param.split("_")[1])
             step1_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔓 1. Open Ad 1 (Adsterra)", url=ADSTERRA_DIRECT_LINK)],
-                [InlineKeyboardButton("👆 2. I Opened Ad 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
+                [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
+                [InlineKeyboardButton("👆 2. I Opened Link 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
                 [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
             ])
             await client.send_message(
                 chat_id=user_id,
                 text=(
                     "🎬 **Download Verification (Step 1 of 2):**\n\n"
-                    "1. පහත **'1. Open Ad 1'** ඔබා Ad එක Open කරන්න.\n"
-                    "2. ඉන්පසු **'2. I Opened Ad 1'** ඔබන්න.\n"
+                    "1. පහත **'1. Open Sponsor Link 1'** ඔබන්න.\n"
+                    "2. ඉන්පසු **'2. I Opened Link 1'** ඔබන්න.\n"
                     "3. තත්පර 8ක් රැඳී සිට **'Verify Step 1'** ඔබන්න."
                 ),
                 reply_markup=step1_markup
@@ -585,16 +583,16 @@ async def callback_search_ad(client: Client, callback: CallbackQuery):
 
     await callback.answer()
     step1_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Ad 1 (Adsterra)", url=ADSTERRA_DIRECT_LINK)],
-        [InlineKeyboardButton("👆 2. I Opened Ad 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
+        [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
+        [InlineKeyboardButton("👆 2. I Opened Link 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
         [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
     ])
     await client.send_message(
         chat_id=user_id,
         text=(
             "🎬 **Download Verification (Step 1 of 2):**\n\n"
-            "1. පහත **'1. Open Ad 1'** ඔබා Ad එක Open කරන්න.\n"
-            "2. ඉන්පසු **'2. I Opened Ad 1'** ඔබන්න.\n"
+            "1. පහත **'1. Open Sponsor Link 1'** ඔබන්න.\n"
+            "2. ඉන්පසු **'2. I Opened Link 1'** ඔබන්න.\n"
             "3. තත්පර 8ක් රැඳී සිට **'Verify Step 1'** ඔබන්න."
         ),
         reply_markup=step1_markup
