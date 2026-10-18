@@ -82,11 +82,10 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 peers_col = db_client["MovieDB"]["channel_peers"]
 
-# Server-side verified tokens
 verified_tokens = set()
 
 # =========================================================
-# WEB SERVER & 8-SECOND COUNTDOWN AD GATE (0 BANDWIDTH)
+# WEB SERVER & ANTI-ADBLOCK 8-SECOND COUNTDOWN GATE
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -106,21 +105,56 @@ COUNTDOWN_HTML = """
         .circle {{ width:75px; height:75px; border-radius:50%; background:#0b1118; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; margin:0 auto 20px; font-size:28px; font-weight:bold; color:#5da9e9; }}
         .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:14px; border-radius:12px; font-weight:bold; font-size:15px; width:100%; box-sizing:border-box; transition:0.2s; }}
         .btn:hover {{ background:#268d46; }}
+        .adblock-box {{ display:none; background:#4a151b; border:1px solid #dc3545; padding:15px; border-radius:12px; color:#ffc9c9; margin-bottom:20px; font-size:13px; line-height:1.4; }}
     </style>
 </head>
 <body>
     <div class="box">
         <div class="badge">STEP {step} OF 2</div>
         <h2>Sponsor Verification</h2>
-        <p id="msg">කරුණාකර තත්පර 8ක් රැඳී සිටින්න. Ad එක පසුබිමින් විවෘත වේ...</p>
+        
+        <div class="adblock-box" id="abAlert">
+            ⚠️ <b>AdBlocker Detected!</b><br>
+            ඔබ Brave Browser හෝ AdBlock භාවිතා කරයි. කරුණාකර <b>AdBlock / Brave Shields Off කර</b> පිටුව Refresh කරන්න.
+        </div>
+
+        <p id="msg">කරුණාකර තත්පර 8ක් රැඳී සිටින්න. Sponsor පිටුව පසුබිමින් විවෘත වේ...</p>
         <div class="circle" id="count">8</div>
         <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}">✅ Return to Telegram Bot</a>
     </div>
+
+    <!-- AdBlock Detection Bait Element -->
+    <div id="ad-banner-tester" class="adsbox ad-placement advertisement ad-zone pub_300x250" style="position:absolute;left:-9999px;width:1px;height:1px;"></div>
+
     <script>
+        let isAdBlock = false;
+        function checkAdBlock() {{
+            const testEl = document.getElementById('ad-banner-tester');
+            if (!testEl || testEl.offsetParent === null || testEl.offsetHeight === 0 || window.getComputedStyle(testEl).display === 'none') {{
+                isAdBlock = true;
+            }}
+            if (navigator.brave && navigator.brave.isBrave) {{
+                navigator.brave.isBrave().then(val => {{ if (val) isAdBlock = true; handleAdBlock(); }});
+            }}
+            handleAdBlock();
+        }}
+
+        function handleAdBlock() {{
+            if (isAdBlock) {{
+                document.getElementById('abAlert').style.display = 'block';
+                document.getElementById('msg').style.display = 'none';
+                document.getElementById('count').style.borderColor = '#dc3545';
+                document.getElementById('count').style.color = '#dc3545';
+                document.getElementById('count').innerText = '!';
+            }}
+        }}
+
+        setTimeout(checkAdBlock, 300);
+
         const targetAd = "{ad_url}";
         let adFired = false;
         function openAd() {{
-            if (!adFired && targetAd) {{
+            if (!isAdBlock && !adFired && targetAd) {{
                 adFired = true;
                 const win = window.open(targetAd, '_blank');
                 if (win) win.focus();
@@ -131,6 +165,7 @@ COUNTDOWN_HTML = """
 
         let sec = 8;
         const timer = setInterval(() => {{
+            if (isAdBlock) return; // Freeze countdown if AdBlock is active
             sec--;
             document.getElementById('count').innerText = sec;
             if (sec <= 0) {{
@@ -468,10 +503,10 @@ async def handle_start(client: Client, message: Message):
         await message.reply_text("👑 **Cinex LK VIP Pass (Monthly)**", reply_markup=get_vip_selection_markup())
         return
 
-    # 5. TOKEN 1 VERIFICATION COMPLETE -> SHOW STEP 2
+    # 5. TOKEN 1 VERIFIED -> SHOW STEP 2
     if param.startswith("tok1_"):
         if param not in verified_tokens:
-            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
+            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර AdBlock අක්‍රිය කර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
             return
 
         parts = param.split("_")
@@ -489,10 +524,10 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # 6. TOKEN 2 VERIFICATION COMPLETE -> AUTO SEND MOVIE
+    # 6. TOKEN 2 VERIFIED -> AUTO SEND MOVIE
     if param.startswith("tok2_"):
         if param not in verified_tokens:
-            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
+            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර AdBlock අක්‍රිය කර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
             return
 
         parts = param.split("_")
@@ -513,7 +548,8 @@ async def handle_start(client: Client, message: Message):
         ])
         await message.reply_text(
             "🎬 **Download Verification (Step 1 of 2):**\n\n"
-            "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා තත්පර 8ක් රැඳී සිටින්න.",
+            "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා තත්පර 8ක් රැඳී සිටින්න.\n\n"
+            "*(AdBlock හෝ Brave Shields භාවිත කරන්නේ නම් කරුණාකර එය Off කරන්න)*",
             reply_markup=step1_markup
         )
         return
@@ -911,7 +947,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 8-Second Ad Gate Live on port {PORT}")
+    print(f"🌐 Anti-AdBlock 8-Second Gate Live on port {PORT}")
 
     await idle()
     await app.stop()
