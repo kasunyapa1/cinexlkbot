@@ -55,6 +55,7 @@ BANK_DETAILS = os.environ.get(
 )
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
+BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 
 ADSTERRA_DIRECT_LINK = os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com").strip()
 MONETAG_STREAM_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
@@ -81,15 +82,105 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 peers_col = db_client["MovieDB"]["channel_peers"]
 
-user_ad_tracker = {}
+# Server-side verified tokens
+verified_tokens = set()
 
 # =========================================================
-# WEB SERVER FOR RENDER PING (ZERO BANDWIDTH)
+# WEB SERVER & 8-SECOND COUNTDOWN AD GATE (0 BANDWIDTH)
 # =========================================================
 routes = web.RouteTableDef()
+
+COUNTDOWN_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Sponsor Verification - Cinex LK</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{ margin:0; background:#0b1118; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:white; display:flex; justify-content:center; align-items:center; min-height:100vh; }}
+        .box {{ background:#16222f; padding:30px 20px; border-radius:18px; text-align:center; max-width:360px; width:90%; border:1px solid #233446; box-shadow:0 12px 35px rgba(0,0,0,0.5); }}
+        .badge {{ background:#233a50; color:#5da9e9; font-size:12px; font-weight:700; padding:6px 12px; border-radius:20px; display:inline-block; margin-bottom:15px; letter-spacing:1px; }}
+        h2 {{ margin:0 0 10px; font-size:20px; }}
+        p {{ color:#8ea2b5; font-size:13px; line-height:1.5; margin:0 0 20px; }}
+        .circle {{ width:75px; height:75px; border-radius:50%; background:#0b1118; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; margin:0 auto 20px; font-size:28px; font-weight:bold; color:#5da9e9; }}
+        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:14px; border-radius:12px; font-weight:bold; font-size:15px; width:100%; box-sizing:border-box; transition:0.2s; }}
+        .btn:hover {{ background:#268d46; }}
+    </style>
+</head>
+<body>
+    <div class="box">
+        <div class="badge">STEP {step} OF 2</div>
+        <h2>Sponsor Verification</h2>
+        <p id="msg">කරුණාකර තත්පර 8ක් රැඳී සිටින්න. Ad එක පසුබිමින් විවෘත වේ...</p>
+        <div class="circle" id="count">8</div>
+        <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}">✅ Return to Telegram Bot</a>
+    </div>
+    <script>
+        const targetAd = "{ad_url}";
+        let adFired = false;
+        function openAd() {{
+            if (!adFired && targetAd) {{
+                adFired = true;
+                const win = window.open(targetAd, '_blank');
+                if (win) win.focus();
+            }}
+        }}
+        setTimeout(openAd, 400);
+        document.body.addEventListener('click', openAd, {{ once: true }});
+
+        let sec = 8;
+        const timer = setInterval(() => {{
+            sec--;
+            document.getElementById('count').innerText = sec;
+            if (sec <= 0) {{
+                clearInterval(timer);
+                fetch('/mark-token/{token}');
+                document.getElementById('count').style.display = 'none';
+                document.getElementById('msg').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! පහත Button එක ඔබන්න.';
+                document.getElementById('doneBtn').style.display = 'block';
+            }}
+        }}, 1000);
+    </script>
+</body>
+</html>
+"""
+
 @routes.get("/")
 async def root_ping(request):
     return web.Response(text="Cinex LK Engine Online", status=200)
+
+@routes.get("/gate/step1/{user_id}/{msg_id}")
+async def gate_step1(request):
+    user_id = request.match_info['user_id']
+    msg_id = request.match_info['msg_id']
+    token = f"tok1_{user_id}_{msg_id}"
+    html = COUNTDOWN_HTML.format(
+        step="1",
+        ad_url=ADSTERRA_DIRECT_LINK,
+        bot_username=BOT_USERNAME,
+        token=token
+    )
+    return web.Response(text=html, content_type='text/html')
+
+@routes.get("/gate/step2/{user_id}/{msg_id}")
+async def gate_step2(request):
+    user_id = request.match_info['user_id']
+    msg_id = request.match_info['msg_id']
+    token = f"tok2_{user_id}_{msg_id}"
+    html = COUNTDOWN_HTML.format(
+        step="2",
+        ad_url=MONETAG_STREAM_LINK,
+        bot_username=BOT_USERNAME,
+        token=token
+    )
+    return web.Response(text=html, content_type='text/html')
+
+@routes.get("/mark-token/{token}")
+async def mark_token(request):
+    token = request.match_info['token']
+    verified_tokens.add(token)
+    return web.Response(text="OK", status=200)
 
 # =========================================================
 # PEER RESOLUTION FOR STORAGE
@@ -138,16 +229,13 @@ async def send_stars_invoice(chat_id: int, title: str, description: str, payload
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                res = await resp.json()
-                if not res.get("ok"):
-                    print(f"❌ Stars invoice fail reason: {res}")
-                return res
+                return await resp.json()
     except Exception as e:
         print(f"⚠️ Stars Invoice HTTP Error: {e}")
         return None
 
 # =========================================================
-# FILE SENDER WITH AUTO-DELETE
+# FILE SENDER WITH DYNAMIC TIMER (1 HOUR vs 6 HOURS)
 # =========================================================
 async def auto_delete_file_task(chat_id: int, message_ids: list, delay: int, delete_text: str):
     await asyncio.sleep(delay)
@@ -342,99 +430,6 @@ async def handle_storage_upload(client: Client, message: Message):
         print(f"❌ Storage Upload error: {e}")
 
 # =========================================================
-# 2-STEP ADS STRICT TIMING & VERIFICATION ENGINE
-# =========================================================
-@app.on_callback_query(filters.regex(r"^step1_opened_"))
-async def mark_step1_opened(client: Client, callback: CallbackQuery):
-    msg_id = int(callback.data.split("_")[2])
-    user_id = callback.from_user.id
-    user_ad_tracker[f"{user_id}_{msg_id}_s1"] = datetime.utcnow()
-    await callback.answer("Link 1 විවෘත විය. තත්පර 8ක් රැඳී සිට පහත Verify Step 1 ඔබන්න.", show_alert=True)
-
-    btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
-        [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
-    ])
-    await callback.message.edit_reply_markup(reply_markup=btn)
-
-@app.on_callback_query(filters.regex(r"^chkstep1_"))
-async def verify_step1(client: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    msg_id = int(callback.data.split("_")[1])
-    key = f"{user_id}_{msg_id}_s1"
-
-    start_time = user_ad_tracker.get(key)
-    if not start_time:
-        await callback.answer("⚠️ පළමුව '1. I Opened Link 1' ඔබා තත්පර 8ක් රැඳී සිටින්න!", show_alert=True)
-        return
-
-    elapsed = (datetime.utcnow() - start_time).total_seconds()
-    if elapsed < 8:
-        await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් රැඳී සිටින්න.", show_alert=True)
-        return
-
-    await callback.answer("🎉 Step 1 Verified!")
-    user_ad_tracker[f"{user_id}_{msg_id}_s1_done"] = True
-
-    step2_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Sponsor Link 2", url=MONETAG_STREAM_LINK)],
-        [InlineKeyboardButton("👆 2. I Opened Link 2 (Click Here)", callback_data=f"step2_opened_{msg_id}")],
-        [InlineKeyboardButton("✅ Verify Step 2 & Get Movie", callback_data=f"chkstep2_{msg_id}")]
-    ])
-    await callback.message.edit_text(
-        "🎬 **Download Verification (Step 2 of 2):**\n\n"
-        "1. පහත **'1. Open Sponsor Link 2'** ඔබන්න.\n"
-        "2. ඉන්පසු **'2. I Opened Link 2'** ඔබන්න.\n"
-        "3. තත්පර 8ක් රැඳී සිට **'Verify Step 2 & Get Movie'** ඔබන්න.",
-        reply_markup=step2_markup
-    )
-
-@app.on_callback_query(filters.regex(r"^step2_opened_"))
-async def mark_step2_opened(client: Client, callback: CallbackQuery):
-    msg_id = int(callback.data.split("_")[2])
-    user_id = callback.from_user.id
-    user_ad_tracker[f"{user_id}_{msg_id}_s2"] = datetime.utcnow()
-    await callback.answer("Link 2 විවෘත විය. තත්පර 8ක් රැඳී සිට පහත Verify Step 2 ඔබන්න.", show_alert=True)
-
-    btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Sponsor Link 2", url=MONETAG_STREAM_LINK)],
-        [InlineKeyboardButton("✅ Verify Step 2 & Get Movie", callback_data=f"chkstep2_{msg_id}")]
-    ])
-    await callback.message.edit_reply_markup(reply_markup=btn)
-
-@app.on_callback_query(filters.regex(r"^chkstep2_"))
-async def verify_step2(client: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    msg_id = int(callback.data.split("_")[1])
-
-    if not user_ad_tracker.get(f"{user_id}_{msg_id}_s1_done"):
-        await callback.answer("⚠️ පළමු පියවර සම්පූර්ණ කර නොමැත.", show_alert=True)
-        return
-
-    start_time = user_ad_tracker.get(f"{user_id}_{msg_id}_s2")
-    if not start_time:
-        await callback.answer("⚠️ පළමුව '2. I Opened Link 2' ඔබා තත්පර 8ක් රැඳී සිටින්න!", show_alert=True)
-        return
-
-    elapsed = (datetime.utcnow() - start_time).total_seconds()
-    if elapsed < 8:
-        await callback.answer(f"⚠️ කරුණාකර තව තත්පර {int(8 - elapsed)}ක් රැඳී සිටින්න.", show_alert=True)
-        return
-
-    await callback.answer("🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය එවමින් පවතී...")
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-    user_ad_tracker.pop(f"{user_id}_{msg_id}_s1", None)
-    user_ad_tracker.pop(f"{user_id}_{msg_id}_s1_done", None)
-    user_ad_tracker.pop(f"{user_id}_{msg_id}_s2", None)
-
-    await client.send_message(chat_id=user_id, text="🎬 **සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:**")
-    await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=False)
-
-# =========================================================
 # START & COMMAND HANDLERS
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
@@ -473,23 +468,54 @@ async def handle_start(client: Client, message: Message):
         await message.reply_text("👑 **Cinex LK VIP Pass (Monthly)**", reply_markup=get_vip_selection_markup())
         return
 
-    # 5. MAIN CHANNEL FREE DOWNLOAD FLOW (STRICT 2-STEP ADS)
+    # 5. TOKEN 1 VERIFICATION COMPLETE -> SHOW STEP 2
+    if param.startswith("tok1_"):
+        if param not in verified_tokens:
+            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
+            return
+
+        parts = param.split("_")
+        msg_id = parts[2]
+        verified_tokens.remove(param)
+
+        step2_url = f"{BASE_URL}/gate/step2/{user_id}/{msg_id}" if BASE_URL else MONETAG_STREAM_LINK
+        step2_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔓 Open Sponsor Link 2 (Final Step)", url=step2_url)]
+        ])
+        await message.reply_text(
+            "🎉 **Step 1 සාර්ථකයි!**\n\n"
+            "චිත්‍රපටය ලබාගැනීමට අවසන් පියවර ලෙස පහත **'Open Sponsor Link 2'** ඔබා තත්පර 8ක් රැඳී සිටින්න.",
+            reply_markup=step2_markup
+        )
+        return
+
+    # 6. TOKEN 2 VERIFICATION COMPLETE -> AUTO SEND MOVIE
+    if param.startswith("tok2_"):
+        if param not in verified_tokens:
+            await message.reply_text("⚠️ **සත්‍යාපනය අසාර්ථකයි!** කරුණාකර තත්පර 8ක් සම්පූර්ණ වන තෙක් රැඳී සිටින්න.")
+            return
+
+        parts = param.split("_")
+        msg_id = int(parts[2])
+        verified_tokens.remove(param)
+
+        await message.reply_text("🎉 **පියවර 2ම සාර්ථකව අවසන් විය! මෙන්න ඔබගේ චිත්‍රපටය:**")
+        await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=False)
+        return
+
+    # 7. MAIN CHANNEL FREE DOWNLOAD INITIATOR (STEP 1)
     if param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
         msg_id = int(param.split("_")[1])
 
+        step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else ADSTERRA_DIRECT_LINK
         step1_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
-            [InlineKeyboardButton("👆 2. I Opened Link 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
-            [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
+            [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
         ])
-        step1_text = (
+        await message.reply_text(
             "🎬 **Download Verification (Step 1 of 2):**\n\n"
-            "නොමිලේ Download කරගැනීම සඳහා පියවර 2ක් සත්‍යාපනය කළ යුතුය.\n\n"
-            "1. පහත **'1. Open Sponsor Link 1'** ඔබන්න.\n"
-            "2. ඉන්පසු **'2. I Opened Link 1'** ඔබන්න.\n"
-            "3. තත්පර 8ක් රැඳී සිට **'Verify Step 1'** ඔබන්න."
+            "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා තත්පර 8ක් රැඳී සිටින්න.",
+            reply_markup=step1_markup
         )
-        await message.reply_text(step1_text, reply_markup=step1_markup)
         return
 
     await message.reply_text(
@@ -521,18 +547,15 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
             await send_file_with_auto_delete(chat_id=user_id, message_id=msg_id, is_vip=True)
         elif param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
             msg_id = int(param.split("_")[1])
+            step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else ADSTERRA_DIRECT_LINK
             step1_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
-                [InlineKeyboardButton("👆 2. I Opened Link 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
-                [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
+                [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
             ])
             await client.send_message(
                 chat_id=user_id,
                 text=(
                     "🎬 **Download Verification (Step 1 of 2):**\n\n"
-                    "1. පහත **'1. Open Sponsor Link 1'** ඔබන්න.\n"
-                    "2. ඉන්පසු **'2. I Opened Link 1'** ඔබන්න.\n"
-                    "3. තත්පර 8ක් රැඳී සිට **'Verify Step 1'** ඔබන්න."
+                    "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා තත්පර 8ක් රැඳී සිටින්න."
                 ),
                 reply_markup=step1_markup
             )
@@ -582,18 +605,15 @@ async def callback_search_ad(client: Client, callback: CallbackQuery):
     msg_id = int(callback.data.split("_")[2])
 
     await callback.answer()
+    step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else ADSTERRA_DIRECT_LINK
     step1_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 1. Open Sponsor Link 1", url=ADSTERRA_DIRECT_LINK)],
-        [InlineKeyboardButton("👆 2. I Opened Link 1 (Click Here)", callback_data=f"step1_opened_{msg_id}")],
-        [InlineKeyboardButton("✅ Verify Step 1", callback_data=f"chkstep1_{msg_id}")]
+        [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
     ])
     await client.send_message(
         chat_id=user_id,
         text=(
             "🎬 **Download Verification (Step 1 of 2):**\n\n"
-            "1. පහත **'1. Open Sponsor Link 1'** ඔබන්න.\n"
-            "2. ඉන්පසු **'2. I Opened Link 1'** ඔබන්න.\n"
-            "3. තත්පර 8ක් රැඳී සිට **'Verify Step 1'** ඔබන්න."
+            "නොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබා තත්පර 8ක් රැඳී සිටින්න."
         ),
         reply_markup=step1_markup
     )
@@ -891,7 +911,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Keep-Alive server active on port {PORT}")
+    print(f"🌐 8-Second Ad Gate Live on port {PORT}")
 
     await idle()
     await app.stop()
