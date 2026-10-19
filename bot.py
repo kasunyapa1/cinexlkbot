@@ -170,7 +170,7 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# PEER RESOLUTION FOR STORAGE
+# PEER RESOLUTION FOR STORAGE & VIP
 # =========================================================
 async def save_peer_to_db(chat_id: int, access_hash: int):
     try:
@@ -188,16 +188,18 @@ async def save_peer_to_db(chat_id: int, access_hash: int):
         pass
 
 async def restore_storage_peer():
-    try:
-        raw_id = int(str(STORAGE_CHANNEL).replace("-100", "").replace("-", ""))
-        doc = await peers_col.find_one({"chat_id": raw_id})
-        if doc and "access_hash" in doc:
+    for target in [STORAGE_CHANNEL, VIP_CHANNEL]:
+        if target:
             try:
-                await app.storage.update_peers([(raw_id, doc["access_hash"], "channel", "", "")])
+                raw_id = int(str(target).replace("-100", "").replace("-", ""))
+                doc = await peers_col.find_one({"chat_id": raw_id})
+                if doc and "access_hash" in doc:
+                    try:
+                        await app.storage.update_peers([(raw_id, doc["access_hash"], "channel", "", "")])
+                    except Exception:
+                        pass
             except Exception:
                 pass
-    except Exception:
-        pass
 
 # =========================================================
 # TELEGRAM STARS INVOICE
@@ -299,7 +301,8 @@ async def is_member(client: Client, chat_target, user_id: int) -> bool:
     if not chat_target:
         return True
     try:
-        member = await client.get_chat_member(chat_target, user_id)
+        target = int(chat_target) if str(chat_target).lstrip("-").isdigit() else chat_target
+        member = await client.get_chat_member(target, user_id)
         status = str(member.status).lower()
         return any(s in status for s in ["member", "administrator", "owner", "restricted"])
     except Exception:
@@ -331,8 +334,9 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
         main_url = f"https://t.me/{MAIN_CHANNEL.replace('@', '')}" if isinstance(MAIN_CHANNEL, str) and MAIN_CHANNEL.startswith("@") else None
         if not main_url:
             try:
-                chat = await client.get_chat(MAIN_CHANNEL)
-                main_url = chat.invite_link or (await client.export_chat_invite_link(MAIN_CHANNEL))
+                target = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
+                chat = await client.get_chat(target)
+                main_url = chat.invite_link or (await client.export_chat_invite_link(target))
             except Exception:
                 pass
         if main_url:
@@ -342,8 +346,9 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
         backup_url = f"https://t.me/{BACKUP_CHANNEL.replace('@', '')}" if isinstance(BACKUP_CHANNEL, str) and BACKUP_CHANNEL.startswith("@") else None
         if not backup_url:
             try:
-                chat = await client.get_chat(BACKUP_CHANNEL)
-                backup_url = chat.invite_link or (await client.export_chat_invite_link(BACKUP_CHANNEL))
+                target = int(BACKUP_CHANNEL) if str(BACKUP_CHANNEL).lstrip("-").isdigit() else BACKUP_CHANNEL
+                chat = await client.get_chat(target)
+                backup_url = chat.invite_link or (await client.export_chat_invite_link(target))
             except Exception:
                 pass
         if backup_url:
@@ -354,7 +359,7 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
     return InlineKeyboardMarkup(buttons)
 
 # =========================================================
-# INTERNET MOVIE METADATA & POSTER SCRAPER (ZERO API KEY)
+# INTERNET MOVIE METADATA & POSTER SCRAPER
 # =========================================================
 def clean_file_title(raw_name: str):
     name = os.path.splitext(raw_name)[0]
@@ -362,7 +367,6 @@ def clean_file_title(raw_name: str):
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", name)
     year = year_match.group(1) if year_match else None
 
-    # Remove quality / group tags
     cleaned = re.sub(
         r"\b(1080p|720p|480p|2160p|4k|hdr|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|aac|esub|cinexlk|tg|hindi|tamil|sinhala)\b.*",
         "",
@@ -376,9 +380,6 @@ def clean_file_title(raw_name: str):
 
 async def fetch_movie_metadata_online(raw_file_name: str):
     clean_title, year = clean_file_title(raw_file_name)
-    query = f"{clean_title} {year}" if year else clean_title
-
-    # 1. Query free public IMDb/TMDb json gateway
     api_url = f"https://www.omdbapi.com/?t={urllib.parse.quote(clean_title)}&y={year or ''}&apikey=trilogy"
     try:
         async with aiohttp.ClientSession() as session:
@@ -398,7 +399,6 @@ async def fetch_movie_metadata_online(raw_file_name: str):
     except Exception:
         pass
 
-    # 2. Fallback to free DuckDuckGo Instant Answer / TMDb Search
     return {
         "title": clean_title.title(),
         "year": year or "N/A",
@@ -409,7 +409,97 @@ async def fetch_movie_metadata_online(raw_file_name: str):
     }
 
 # =========================================================
-# AUTO-POST STORAGE TO CHANNELS (WITH INTERNET POSTER & DETAILS)
+# HELPER: DISPATCH MOVIE POST TO CHANNELS
+# =========================================================
+async def dispatch_movie_post(client: Client, media, file_name: str, msg_id: int):
+    size_mb = round(media.file_size / (1024 * 1024), 2)
+
+    await files_col.update_one(
+        {"message_id": msg_id},
+        {"$set": {
+            "file_name": file_name,
+            "file_size": media.file_size,
+            "message_id": msg_id,
+            "created_at": datetime.utcnow()
+        }, "$setOnInsert": {"download_count": 0}},
+        upsert=True
+    )
+
+    get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"
+    vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
+    vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+
+    main_buttons = [
+        [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
+        [
+            InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
+        ]
+    ]
+    main_markup = InlineKeyboardMarkup(main_buttons)
+
+    vip_buttons = [
+        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_url)]
+    ]
+    vip_markup = InlineKeyboardMarkup(vip_buttons)
+
+    meta = await fetch_movie_metadata_online(file_name)
+    post_caption = (
+        f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+        f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
+        f"🎭 **Genres:** `{meta['genres']}`\n"
+        f"📦 **Size:** `{size_mb} MB`\n\n"
+        f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+        "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+    )
+
+    poster_to_send = meta.get("poster")
+    if not poster_to_send and hasattr(media, "thumbs") and media.thumbs:
+        poster_to_send = media.thumbs[0].file_id
+
+    # 1. POST TO MAIN CHANNEL
+    if MAIN_CHANNEL:
+        try:
+            target = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
+            if poster_to_send:
+                await client.send_photo(chat_id=target, photo=poster_to_send, caption=post_caption, reply_markup=main_markup)
+            else:
+                await client.send_message(chat_id=target, text=post_caption, reply_markup=main_markup)
+        except Exception as e:
+            print(f"Main post error: {e}")
+            try:
+                await client.send_message(chat_id=MAIN_CHANNEL, text=post_caption, reply_markup=main_markup)
+            except Exception:
+                pass
+
+    # 2. POST TO VIP CHANNEL (Safe target handling)
+    if VIP_CHANNEL:
+        try:
+            target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
+            if poster_to_send:
+                await client.send_photo(chat_id=target_vip, photo=poster_to_send, caption=post_caption, reply_markup=vip_markup)
+            else:
+                await client.send_message(chat_id=target_vip, text=post_caption, reply_markup=vip_markup)
+        except Exception as e:
+            print(f"VIP post error: {e}")
+            # Fallback to direct HTTP post for private channel if library peer is missing
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": int(str(VIP_CHANNEL)),
+                    "text": post_caption,
+                    "reply_markup": {
+                        "inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]]
+                    },
+                    "parse_mode": "Markdown"
+                }
+                async with aiohttp.ClientSession() as session:
+                    await session.post(url, json=payload)
+            except Exception:
+                pass
+
+# =========================================================
+# AUTO-POST STORAGE TO CHANNELS
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
@@ -421,9 +511,6 @@ async def handle_storage_upload(client: Client, message: Message):
         storage_id_clean = str(STORAGE_CHANNEL).replace("-100", "").replace("-", "")
 
         if chat_id_clean != storage_id_clean:
-            return
-
-        if message.from_user and message.from_user.is_self:
             return
 
         try:
@@ -438,80 +525,35 @@ async def handle_storage_upload(client: Client, message: Message):
             return
 
         file_name = media.file_name or "Unknown Movie"
-        size_mb = round(media.file_size / (1024 * 1024), 2)
         msg_id = message.id
 
-        await files_col.update_one(
-            {"message_id": msg_id},
-            {"$set": { "file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow() }, "$setOnInsert": {"download_count": 0}},
-            upsert=True
-        )
-
-        get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"
-        vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
-        vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
-
-        main_buttons = [
-            [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
-            [
-                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
-            ]
-        ]
-        main_markup = InlineKeyboardMarkup(main_buttons)
-
-        vip_buttons = [
-            [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_url)]
-        ]
-        vip_markup = InlineKeyboardMarkup(vip_buttons)
-
-        # FETCH INTERNET DETAILS & POSTER
-        meta = await fetch_movie_metadata_online(file_name)
-        
-        post_caption = (
-            f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-            f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
-            f"🎭 **Genres:** `{meta['genres']}`\n"
-            f"📦 **Size:** `{size_mb} MB`\n\n"
-            f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-            "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
-        )
-
-        # Prioritize Online Official Poster, then video thumb
-        poster_to_send = meta.get("poster")
-        if not poster_to_send and hasattr(media, "thumbs") and media.thumbs:
-            poster_to_send = media.thumbs[0].file_id
-
-        # 1. SEND TO MAIN CHANNEL
-        if MAIN_CHANNEL:
-            try:
-                if poster_to_send:
-                    await client.send_photo(chat_id=MAIN_CHANNEL, photo=poster_to_send, caption=post_caption, reply_markup=main_markup)
-                else:
-                    await client.send_message(chat_id=MAIN_CHANNEL, text=post_caption, reply_markup=main_markup)
-            except Exception as e:
-                print(f"Main post error: {e}")
-                try:
-                    await client.send_message(chat_id=MAIN_CHANNEL, text=post_caption, reply_markup=main_markup)
-                except Exception:
-                    pass
-
-        # 2. SEND TO VIP CHANNEL
-        if VIP_CHANNEL:
-            try:
-                if poster_to_send:
-                    await client.send_photo(chat_id=VIP_CHANNEL, photo=poster_to_send, caption=post_caption, reply_markup=vip_markup)
-                else:
-                    await client.send_message(chat_id=VIP_CHANNEL, text=post_caption, reply_markup=vip_markup)
-            except Exception as e:
-                print(f"VIP post error: {e}")
-                try:
-                    await client.send_message(chat_id=VIP_CHANNEL, text=post_caption, reply_markup=vip_markup)
-                except Exception:
-                    pass
+        await dispatch_movie_post(client, media, file_name, msg_id)
 
     except Exception as e:
         print(f"❌ Storage Upload error: {e}")
+
+# =========================================================
+# FORWARDED POST HANDLER (ADMIN FORWARD TO BOT -> AUTO VIP POST)
+# =========================================================
+@app.on_message(filters.private & filters.forwarded)
+async def handle_admin_forwarded_post(client: Client, message: Message):
+    if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
+        return
+
+    media = message.document or message.video
+    if not media:
+        await message.reply_text("⚠️ කරුණාකර Movie Video හෝ Document එකක් සහිත Post එකක් Forward කරන්න.")
+        return
+
+    file_name = media.file_name or "Unknown Movie"
+    msg_id = message.forward_from_message_id or message.id
+
+    status = await message.reply_text("⏳ මෙම චිත්‍රපටය VIP Channel එකට Post කරමින් පවතී...")
+    try:
+        await dispatch_movie_post(client, media, file_name, msg_id)
+        await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
+    except Exception as e:
+        await status.edit_text(f"❌ Auto-post දෝෂය: {e}")
 
 # =========================================================
 # START COMMAND (RELIABLE PARAMETER ROUTING)
@@ -1042,7 +1084,8 @@ async def admin_add_vip_handler(client: Client, message: Message):
         upsert=True
     )
     try:
-        invite = await client.create_chat_invite_link(chat_id=VIP_CHANNEL, member_limit=1)
+        target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
+        invite = await client.create_chat_invite_link(chat_id=target_vip, member_limit=1)
         await client.send_message(
             chat_id=target_user_id,
             text=f"🎉 **ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{invite.invite_link}"
@@ -1081,7 +1124,8 @@ async def payment_success(client: Client, message: Message):
             upsert=True
         )
         try:
-            invite = await client.create_chat_invite_link(chat_id=VIP_CHANNEL, member_limit=1)
+            target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
+            invite = await client.create_chat_invite_link(chat_id=target_vip, member_limit=1)
             await message.reply_text(f"🎉 **VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{invite.invite_link}")
         except Exception:
             pass
