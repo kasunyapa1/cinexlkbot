@@ -11,7 +11,9 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery
+    CallbackQuery,
+    LabeledPrice,
+    PreCheckoutQuery
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -168,26 +170,40 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# TELEGRAM STARS INVOICE
+# TELEGRAM STARS INVOICE (OFFICIAL PYROGRAM STARS ENGINE)
 # =========================================================
-async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    data = {
-        "chat_id": int(chat_id),
-        "title": title,
-        "description": description,
-        "payload": payload,
-        "provider_token": "",
-        "currency": "XTR",
-        "prices": [{"label": title, "amount": int(stars)}]
-    }
+async def send_stars_invoice(client: Client, chat_id: int, title: str, description: str, payload: str, stars: int):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                return await resp.json()
+        await client.send_invoice(
+            chat_id=chat_id,
+            title=title,
+            description=description,
+            payload=payload,
+            currency="XTR",
+            prices=[LabeledPrice(label=title, amount=stars)],
+            provider_token=""
+        )
+        return True
     except Exception as e:
-        print(f"⚠️ Stars Invoice HTTP Error: {e}")
-        return None
+        print(f"⚠️ Stars Invoice Error: {e}")
+        # Fallback to direct HTTP API if Pyrogram internal fails
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+        data = {
+            "chat_id": int(chat_id),
+            "title": title,
+            "description": description,
+            "payload": payload,
+            "provider_token": "",
+            "currency": "XTR",
+            "prices": [{"label": title, "amount": int(stars)}]
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    res = await resp.json()
+                    return res.get("ok", False)
+        except Exception:
+            return False
 
 # =========================================================
 # FILE SENDER WITH DYNAMIC TIMER & DOWNLOAD TRACKING
@@ -518,7 +534,6 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
 
     original_caption = message.caption or message.text or ""
 
-    # Strategy 1: Check inline buttons
     target_msg_id = None
     if message.reply_markup and message.reply_markup.inline_keyboard:
         for row in message.reply_markup.inline_keyboard:
@@ -531,7 +546,6 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
             if target_msg_id:
                 break
 
-    # Strategy 2: Search title in DB if forward stripped buttons
     file_doc = None
     if target_msg_id:
         file_doc = await files_col.find_one({"message_id": target_msg_id})
@@ -626,6 +640,11 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client: Client, message: Message):
+    global BOT_USERNAME
+    if not BOT_USERNAME:
+        me = await client.get_me()
+        BOT_USERNAME = me.username
+
     text = message.text or ""
     parts = text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
@@ -670,16 +689,19 @@ async def handle_start(client: Client, message: Message):
         except Exception:
             pass
 
-    # 4. STARS SINGLE PURCHASE
+    # 4. STARS SINGLE PURCHASE INVOICE
     if param.startswith("buy_"):
         msg_id = param.split("_")[1]
-        await send_stars_invoice(
+        sent = await send_stars_invoice(
+            client=client,
             chat_id=user_id,
-            title="Direct Movie File",
-            description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
+            title="⚡ Direct Movie File (No Ads)",
+            description=f"චිත්‍රපටය කිසිදු දැන්වීමක් නොමැතිව direct Telegram file එකක් ලෙස ලබාගැනීමට.",
             payload=f"single_{msg_id}",
             stars=SINGLE_STAR_PRICE
         )
+        if not sent:
+            await message.reply_text("⚠️ Invoice එක සෑදීම අසාර්ථක විය. කරුණාකර සුළු මොහොතකින් නැවත උත්සාහ කරන්න.")
         return
 
     # 5. VIP MENU
@@ -981,7 +1003,7 @@ async def handle_search_and_request(client: Client, message: Message):
             buttons = [
                 [InlineKeyboardButton("📥 Download Movie (Free Ads)", callback_data=f"search_ad_{msg_id}")],
                 [
-                    InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️ / Rs. 20)", callback_data=f"buy_single_{msg_id}"),
+                    InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", callback_data=f"buy_single_{msg_id}"),
                     InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", callback_data="buy_vip_pass")
                 ]
             ]
@@ -1058,25 +1080,31 @@ async def vip_selection_callback(client: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^pay_vip_stars$"))
 async def pay_vip_stars_handler(client: Client, callback: CallbackQuery):
     await callback.answer("⭐ Preparing Stars Invoice...")
-    await send_stars_invoice(
+    sent = await send_stars_invoice(
+        client=client,
         chat_id=callback.from_user.id,
-        title="VIP Pass (30 Days)",
+        title="👑 Cinex LK VIP Pass (30 Days)",
         description="Cinex LK VIP Channel ප්‍රවේශය (No Ads + Direct Files)",
         payload="vip_sub",
         stars=VIP_STAR_PRICE
     )
+    if not sent:
+        await callback.message.reply_text("⚠️ Invoice සෑදීම අසාර්ථක විය. නැවත උත්සාහ කරන්න.")
 
 @app.on_callback_query(filters.regex(r"^buy_single_"))
 async def pay_single(client: Client, callback: CallbackQuery):
     msg_id = callback.data.split("_")[2]
     await callback.answer("⭐ Preparing Stars Invoice...")
-    await send_stars_invoice(
+    sent = await send_stars_invoice(
+        client=client,
         chat_id=callback.from_user.id,
-        title="Direct Movie File",
+        title="⚡ Direct Movie File (No Ads)",
         description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
         payload=f"single_{msg_id}",
         stars=SINGLE_STAR_PRICE
     )
+    if not sent:
+        await callback.message.reply_text("⚠️ Invoice සෑදීම අසාර්ථක විය. නැවත උත්සාහ කරන්න.")
 
 @app.on_callback_query(filters.regex(r"^pay_vip_bank$"))
 async def pay_vip_bank_handler(client: Client, callback: CallbackQuery):
@@ -1168,24 +1196,22 @@ async def admin_add_vip_handler(client: Client, message: Message):
         await message.reply_text(f"⚠️ Invite Error: {e}")
 
 # =========================================================
-# PAYMENT PRE-CHECKOUT & SUCCESS
+# PAYMENT PRE-CHECKOUT & SUCCESS (OFFICIAL HANDLERS)
 # =========================================================
-@app.on_raw_update()
-async def raw_update_handler(client: Client, update, users, chats):
-    if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
+@app.on_pre_checkout_query()
+async def process_pre_checkout_query(client: Client, query: PreCheckoutQuery):
+    try:
+        await query.answer(ok=True)
+    except Exception as e:
+        print(f"⚠️ Pre-checkout query error: {e}")
 
-payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
-
-@app.on_message(payment_filter)
-async def payment_success(client: Client, message: Message):
+@app.on_message(filters.successful_payment)
+async def process_successful_payment(client: Client, message: Message):
     payload = message.successful_payment.invoice_payload
 
     if payload.startswith("single_"):
         msg_id = int(payload.split("_")[1])
-        await message.reply_text("🎉 **ගෙවීම සාර්ථකයි!** මෙන්න Movie එක:")
+        await message.reply_text("🎉 **Stars ගෙවීම සාර්ථකයි!** මෙන්න ඔබගේ චිත්‍රපටය:")
         await send_file_with_auto_delete(chat_id=message.chat.id, message_id=msg_id, is_vip=True)
 
     elif payload == "vip_sub":
