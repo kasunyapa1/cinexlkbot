@@ -169,22 +169,22 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# TELEGRAM STARS INVOICE (OFFICIAL BOT API COMPLIANT)
+# TELEGRAM STARS INVOICE ENGINE (100% BOT API STANDARD)
 # =========================================================
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    data = {
+    body = {
         "chat_id": int(chat_id),
         "title": str(title),
         "description": str(description),
         "payload": str(payload),
         "currency": "XTR",
-        "prices": json.dumps([{"label": str(title), "amount": int(stars)}]),
+        "prices": [{"label": str(title)[:30], "amount": int(stars)}],
         "provider_token": ""
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 res = await resp.json()
                 if not res.get("ok"):
                     print(f"❌ Stars API Error: {res}")
@@ -678,7 +678,7 @@ async def handle_start(client: Client, message: Message):
         except Exception:
             pass
 
-    # 4. STARS SINGLE PURCHASE INVOICE
+    # 4. STARS SINGLE PURCHASE INVOICE (VIA START PARAM)
     if param.startswith("buy_"):
         msg_id = param.split("_")[1]
         ok, err = await send_stars_invoice(
@@ -692,12 +692,25 @@ async def handle_start(client: Client, message: Message):
             await message.reply_text(f"⚠️ Stars Invoice Error: `{err}`\n\n📌 *BotFather හි ඔබගේ Bot වෙත Payments enable කර ඇත්දැයි බලන්න.*")
         return
 
-    # 5. VIP MENU
+    # 5. STARS VIP PASS PURCHASE (DIRECT DEEP LINK)
+    if param == "buystar_vip":
+        ok, err = await send_stars_invoice(
+            chat_id=user_id,
+            title="👑 Cinex LK VIP Pass (30 Days)",
+            description="Cinex LK VIP Channel ප්‍රවේශය (No Ads + Direct Files)",
+            payload="vip_sub",
+            stars=VIP_STAR_PRICE
+        )
+        if not ok:
+            await message.reply_text(f"⚠️ Stars Invoice Error: `{err}`\n\n📌 *BotFather හි ඔබගේ Bot වෙත Payments enable කර ඇත්දැයි බලන්න.*")
+        return
+
+    # 6. VIP MENU
     if param == "vip":
         await message.reply_text("👑 **Cinex LK VIP Pass (Monthly)**", reply_markup=get_vip_selection_markup())
         return
 
-    # 6. FORCE SUB MEMBERSHIP CHECK
+    # 7. FORCE SUB MEMBERSHIP CHECK
     has_access = await check_user_access(client, user_id)
     if not has_access:
         markup = await get_dual_fsub_buttons(client, param)
@@ -707,7 +720,7 @@ async def handle_start(client: Client, message: Message):
         )
         return
 
-    # 7. MAIN CHANNEL FREE DOWNLOAD INITIATOR
+    # 8. MAIN CHANNEL FREE DOWNLOAD INITIATOR
     if param.startswith("adstep1_") or param.startswith("adget_") or param.startswith("get_"):
         try:
             msg_id = int(param.split("_")[1])
@@ -765,6 +778,14 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
             )
         elif param == "vip":
             await client.send_message(chat_id=user_id, text="👑 **Cinex LK VIP Pass**", reply_markup=get_vip_selection_markup())
+        elif param == "buystar_vip":
+            await send_stars_invoice(
+                chat_id=user_id,
+                title="👑 Cinex LK VIP Pass (30 Days)",
+                description="Cinex LK VIP Channel ප්‍රවේශය (No Ads + Direct Files)",
+                payload="vip_sub",
+                stars=VIP_STAR_PRICE
+            )
         else:
             await client.send_message(chat_id=user_id, text="👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න.")
     else:
