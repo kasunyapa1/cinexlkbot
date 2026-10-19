@@ -13,7 +13,6 @@ from pyrogram.types import (
     Message,
     CallbackQuery
 )
-from pyrogram.errors import UserNotParticipant, ChatAdminRequired, PeerIdInvalid, RPCError
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -171,38 +170,6 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# PEER RESOLUTION FOR STORAGE & VIP
-# =========================================================
-async def save_peer_to_db(chat_id: int, access_hash: int):
-    try:
-        raw_id = int(str(chat_id).replace("-100", "").replace("-", ""))
-        await peers_col.update_one(
-            {"chat_id": raw_id},
-            {"$set": {"chat_id": raw_id, "access_hash": access_hash, "updated_at": datetime.utcnow()}},
-            upsert=True
-        )
-        try:
-            await app.storage.update_peers([(raw_id, access_hash, "channel", "", "")])
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-async def restore_storage_peer():
-    for target in [STORAGE_CHANNEL, VIP_CHANNEL]:
-        if target:
-            try:
-                raw_id = int(str(target).replace("-100", "").replace("-", ""))
-                doc = await peers_col.find_one({"chat_id": raw_id})
-                if doc and "access_hash" in doc:
-                    try:
-                        await app.storage.update_peers([(raw_id, doc["access_hash"], "channel", "", "")])
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-# =========================================================
 # TELEGRAM STARS INVOICE
 # =========================================================
 async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
@@ -236,10 +203,6 @@ async def auto_delete_file_task(chat_id: int, message_ids: list, delay: int, del
         pass
 
 async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool = False):
-    await restore_storage_peer()
-    target_storage = int(STORAGE_CHANNEL) if str(STORAGE_CHANNEL).lstrip("-").isdigit() else STORAGE_CHANNEL
-    sent_msg = None
-
     delay = VIP_USER_DELETE_DURATION if is_vip else FREE_USER_DELETE_DURATION
     time_label = "පැය 6" if is_vip else "පැය 1"
 
@@ -258,38 +221,26 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
     )
     delete_notification = f"🗑️ **ප්‍රකාශන හිමිකම් ආරක්ෂාව (Copyright Protection) හේතුවෙන් පෙර එවන ලද වීඩියෝ පටය {time_label} අවසානයේ Chat එකෙන් ඉවත් කරන ලදී.**"
 
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
+    payload = {"chat_id": int(chat_id), "from_chat_id": int(str(STORAGE_CHANNEL)), "message_id": int(message_id)}
     try:
-        sent_msg = await app.copy_message(chat_id=chat_id, from_chat_id=target_storage, message_id=message_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    sent_msg_id = res.get("result", {}).get("message_id")
+                    warn_msg = await app.send_message(chat_id=chat_id, text=warn_text)
+                    asyncio.create_task(auto_delete_file_task(chat_id, [sent_msg_id, warn_msg.id], delay, delete_notification))
+                    return True
+                else:
+                    await files_col.delete_one({"message_id": int(message_id)})
+                    await app.send_message(chat_id=chat_id, text="❌ **මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.**")
+                    return False
     except Exception:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-        payload = {"chat_id": int(chat_id), "from_chat_id": int(str(STORAGE_CHANNEL)), "message_id": int(message_id)}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as resp:
-                    res = await resp.json()
-                    if res.get("ok"):
-                        sent_msg_id = res.get("result", {}).get("message_id")
-                        warn_msg = await app.send_message(chat_id=chat_id, text=warn_text)
-                        asyncio.create_task(auto_delete_file_task(chat_id, [sent_msg_id, warn_msg.id], delay, delete_notification))
-                        return True
-                    else:
-                        await files_col.delete_one({"message_id": int(message_id)})
-                        await app.send_message(chat_id=chat_id, text="❌ **මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.**")
-                        return False
-        except Exception:
-            pass
-
-    if sent_msg:
-        warn_msg = await app.send_message(chat_id=chat_id, text=warn_text)
-        asyncio.create_task(auto_delete_file_task(chat_id, [sent_msg.id, warn_msg.id], delay, delete_notification))
-        return True
-    else:
-        await files_col.delete_one({"message_id": int(message_id)})
-        await app.send_message(chat_id=chat_id, text="❌ **මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.**")
         return False
 
 # =========================================================
-# VIP CHECK & CHANNEL ACCESS
+# VIP CHECK & CHANNEL ACCESS (SAFE HTTP RESOLUTION)
 # =========================================================
 async def is_vip_user(user_id: int) -> bool:
     try:
@@ -302,12 +253,17 @@ async def is_member(client: Client, chat_target, user_id: int) -> bool:
     if not chat_target:
         return True
     try:
-        target = int(chat_target) if str(chat_target).lstrip("-").isdigit() else chat_target
-        member = await client.get_chat_member(target, user_id)
-        status = str(member.status).lower()
-        return any(s in status for s in ["member", "administrator", "owner", "restricted"])
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+        payload = {"chat_id": str(chat_target), "user_id": int(user_id)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    status = str(res.get("result", {}).get("status", "")).lower()
+                    return any(s in status for s in ["member", "administrator", "creator", "restricted"])
     except Exception:
-        return False
+        pass
+    return False
 
 async def check_user_access(client: Client, user_id: int) -> bool:
     try:
@@ -425,6 +381,34 @@ async def download_image_bytes(url: str):
     return None
 
 # =========================================================
+# HELPER: SEND HTTP TELEGRAM REQUEST (64-BIT PEER PROOF)
+# =========================================================
+async def send_telegram_http_photo(chat_id: str, photo_bytes: bytes, caption: str, reply_markup: dict):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    form.add_field("photo", photo_bytes, filename="poster.jpg")
+    form.add_field("caption", caption)
+    form.add_field("parse_mode", "Markdown")
+    form.add_field("reply_markup", aiohttp.payload.JsonPayload(reply_markup))
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            return await resp.json()
+
+async def send_telegram_http_message(chat_id: str, text: str, reply_markup: dict):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": str(chat_id),
+        "text": text,
+        "reply_markup": reply_markup,
+        "parse_mode": "Markdown"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            return await resp.json()
+
+# =========================================================
 # AUTO-POST STORAGE TO MAIN CHANNEL
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
@@ -441,13 +425,6 @@ async def handle_storage_upload(client: Client, message: Message):
 
         if message.from_user and message.from_user.is_self:
             return
-
-        try:
-            peer = await client.resolve_peer(message.chat.id)
-            if hasattr(peer, "access_hash"):
-                await save_peer_to_db(peer.channel_id, peer.access_hash)
-        except Exception:
-            pass
 
         media = message.document or message.video
         if not media:
@@ -513,10 +490,6 @@ async def handle_storage_upload(client: Client, message: Message):
                     await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
             except Exception as e:
                 print(f"Main post error: {e}")
-                try:
-                    await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
-                except Exception:
-                    pass
 
         if thumb_path and os.path.exists(thumb_path):
             try:
@@ -528,17 +501,15 @@ async def handle_storage_upload(client: Client, message: Message):
         print(f"❌ Storage Upload error: {e}")
 
 # =========================================================
-# FORWARDED POST HANDLER (MAIN POST FORWARD -> VIP AUTO-POST)
+# FORWARDED POST HANDLER (FORWARD MAIN POST -> VIP AUTO-POST)
 # =========================================================
 @app.on_message(filters.private & filters.forwarded)
 async def handle_admin_forwarded_post(client: Client, message: Message):
     if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
         return
 
-    # Extract original text or caption from the forwarded message
     original_caption = message.caption or message.text or ""
 
-    # Extract target Storage Message ID
     target_msg_id = None
     if message.reply_markup and message.reply_markup.inline_keyboard:
         for row in message.reply_markup.inline_keyboard:
@@ -551,15 +522,12 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
             if target_msg_id:
                 break
 
-    # If forwarded as raw video/document
     if not target_msg_id:
         target_msg_id = message.forward_from_message_id or message.id
 
-    # Find file info in DB
     file_doc = await files_col.find_one({"message_id": target_msg_id})
     file_name = file_doc.get("file_name", "Movie") if file_doc else "Movie"
 
-    # Construct clean VIP caption without free ads instructions
     if original_caption:
         clean_caption = re.sub(r"👇.*චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:?.*", "", original_caption, flags=re.DOTALL).strip()
     else:
@@ -572,55 +540,65 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
         )
 
     vip_caption = f"{clean_caption}\n\n👑 **VIP Pass:** දැන්වීම් නොමැතිව direct download කරගන්න 👇"
-
     vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{target_msg_id}"
-    vip_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_url)]
-    ])
+    vip_markup = {
+        "inline_keyboard": [
+            [{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]
+        ]
+    }
 
-    target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
+    target_vip = str(VIP_CHANNEL).strip()
     status = await message.reply_text("⏳ මෙම පෝස්ට් එක Photo & Direct Link සහිතව VIP Channel එකට දමමින් පවතී...")
 
     sent_vip = False
-    downloaded_photo = None
+    downloaded_photo_path = None
+    res = {}
 
     try:
-        # Case A: Forwarded message already has a photo
+        # 1. Forwarded message has photo
         if message.photo:
-            downloaded_photo = await client.download_media(message.photo.file_id)
-            await client.send_photo(chat_id=target_vip, photo=downloaded_photo, caption=vip_caption, reply_markup=vip_markup)
-            sent_vip = True
-
-        # Case B: Forwarded message is a video/document with a thumbnail
+            downloaded_photo_path = await client.download_media(message.photo.file_id)
+        # 2. Forwarded message is video with thumb
         elif (message.video and message.video.thumbs) or (message.document and message.document.thumbs):
             thumb = (message.video or message.document).thumbs[0]
-            downloaded_photo = await client.download_media(thumb.file_id)
-            await client.send_photo(chat_id=target_vip, photo=downloaded_photo, caption=vip_caption, reply_markup=vip_markup)
-            sent_vip = True
+            downloaded_photo_path = await client.download_media(thumb.file_id)
 
-        # Case C: Try fetching poster online
+        if downloaded_photo_path and os.path.exists(downloaded_photo_path):
+            with open(downloaded_photo_path, "rb") as fp:
+                img_data = fp.read()
+            res = await send_telegram_http_photo(target_vip, img_data, vip_caption, vip_markup)
+            if res.get("ok"):
+                sent_vip = True
+
+        # 3. Fallback to online fetched poster
         if not sent_vip:
             meta = await fetch_movie_metadata_online(file_name)
             if meta.get("poster"):
                 b = await download_image_bytes(meta["poster"])
                 if b:
-                    await client.send_photo(chat_id=target_vip, photo=b, caption=vip_caption, reply_markup=vip_markup)
-                    sent_vip = True
+                    res = await send_telegram_http_photo(target_vip, b.read(), vip_caption, vip_markup)
+                    if res.get("ok"):
+                        sent_vip = True
 
-        # Case D: Fallback to text message if no photo
+        # 4. Fallback to text message
         if not sent_vip:
-            await client.send_message(chat_id=target_vip, text=vip_caption, reply_markup=vip_markup)
-            sent_vip = True
+            res = await send_telegram_http_message(target_vip, vip_caption, vip_markup)
+            if res.get("ok"):
+                sent_vip = True
 
-        await status.edit_text(f"✅ **'{file_name}'** Photo සහ Direct Link සහිතව VIP Channel එකට සාර්ථකව Post කරන ලදී!")
+        if sent_vip:
+            await status.edit_text(f"✅ **'{file_name}'** Photo සහ Direct Link සහිතව VIP Channel එකට සාර්ථකව Post කරන ලදී!")
+        else:
+            err = res.get("description", "Unknown Error")
+            await status.edit_text(f"❌ **VIP Post කිරීමේ දෝෂය:** `{err}`")
 
     except Exception as e:
-        await status.edit_text(f"❌ **VIP Post කිරීමේ දෝෂය:** `{e}`")
+        await status.edit_text(f"❌ **දෝෂය:** `{e}`")
 
     finally:
-        if downloaded_photo and os.path.exists(downloaded_photo):
+        if downloaded_photo_path and os.path.exists(downloaded_photo_path):
             try:
-                os.remove(downloaded_photo)
+                os.remove(downloaded_photo_path)
             except Exception:
                 pass
 
@@ -1153,13 +1131,20 @@ async def admin_add_vip_handler(client: Client, message: Message):
         upsert=True
     )
     try:
-        target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
-        invite = await client.create_chat_invite_link(chat_id=target_vip, member_limit=1)
-        await client.send_message(
-            chat_id=target_user_id,
-            text=f"🎉 **ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{invite.invite_link}"
-        )
-        await message.reply_text(f"✅ User `{target_user_id}` VIP ලෙස සක්‍රිය කරන ලදී.")
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+        payload = {"chat_id": str(VIP_CHANNEL), "member_limit": 1}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    link = res["result"]["invite_link"]
+                    await client.send_message(
+                        chat_id=target_user_id,
+                        text=f"🎉 **ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}"
+                    )
+                    await message.reply_text(f"✅ User `{target_user_id}` VIP ලෙස සක්‍රිය කරන ලදී.")
+                    return
+        await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය. Bot ට Invite Link Rights ඇත්දැයි බලන්න.")
     except Exception as e:
         await message.reply_text(f"⚠️ Invite Error: {e}")
 
@@ -1193,9 +1178,14 @@ async def payment_success(client: Client, message: Message):
             upsert=True
         )
         try:
-            target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
-            invite = await client.create_chat_invite_link(chat_id=target_vip, member_limit=1)
-            await message.reply_text(f"🎉 **VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{invite.invite_link}")
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+            payload = {"chat_id": str(VIP_CHANNEL), "member_limit": 1}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as resp:
+                    res = await resp.json()
+                    if res.get("ok"):
+                        link = res["result"]["invite_link"]
+                        await message.reply_text(f"🎉 **VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}")
         except Exception:
             pass
 
@@ -1206,7 +1196,6 @@ async def main():
     await app.start()
     me = await app.get_me()
     print(f"🤖 Bot Started Successfully as @{me.username}")
-    await restore_storage_peer()
 
     web_app = web.Application()
     web_app.add_routes(routes)
