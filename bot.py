@@ -19,14 +19,16 @@ from aiohttp import web
 
 def parse_target(val: str):
     if not val:
-        return 0
+        return ""
     val = str(val).strip()
-    if val.startswith("@"):
-        return val
-    try:
-        return int(val)
-    except ValueError:
-        return val
+    if val.startswith("-100") or val.startswith("-") or val.isdigit():
+        try:
+            return int(val)
+        except ValueError:
+            return val
+    if not val.startswith("@"):
+        return f"@{val}"
+    return val
 
 # =========================================================
 # CONFIGURATIONS
@@ -157,7 +159,7 @@ async def gate_step2(request):
     return web.Response(text=html_page, content_type='text/html')
 
 # =========================================================
-# TELEGRAM HTTP ENGINES (HTML SAFE)
+# TELEGRAM HTTP ENGINES
 # =========================================================
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -177,34 +179,6 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
                 return res.get("ok", False), res.get("description", "")
     except Exception as e:
         return False, str(e)
-
-async def send_tg_photo_url(chat_id: str, photo_url: str, caption_html: str, reply_markup: dict):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    data = {
-        "chat_id": str(chat_id),
-        "photo": photo_url,
-        "caption": caption_html,
-        "parse_mode": "HTML",
-        "reply_markup": json.dumps(reply_markup)
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                return await resp.json()
-    except Exception as e:
-        return {"ok": False, "description": str(e)}
-
-async def send_tg_message(chat_id: str, text_html: str, reply_markup: dict = None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": str(chat_id), "text": text_html, "parse_mode": "HTML"}
-    if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                return await resp.json()
-    except Exception as e:
-        return {"ok": False, "description": str(e)}
 
 # =========================================================
 # FILE SENDER & AUTO-DELETE
@@ -355,7 +329,7 @@ async def fetch_metadata(raw_name: str):
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
-# CREATE PREVIEW POST IN STORAGE CHANNEL (WITH CONTROL BUTTONS)
+# CREATE PREVIEW POST IN STORAGE CHANNEL
 # =========================================================
 async def create_storage_preview(client: Client, message: Message):
     global BOT_USERNAME
@@ -396,16 +370,15 @@ async def create_storage_preview(client: Client, message: Message):
 
     poster_url = meta.get("poster") if (meta.get("poster") and meta["poster"].startswith("http")) else DEFAULT_POSTER
 
-    preview_markup = {
-        "inline_keyboard": [
-            [{"text": "📢 Post to Main Channel", "callback_data": f"post_main_{msg_id}"}],
-            [{"text": "👑 Post to VIP Channel", "callback_data": f"post_vip_{msg_id}"}]
-        ]
-    }
+    preview_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Post to Main Channel", callback_data=f"post_main_{msg_id}")],
+        [InlineKeyboardButton("👑 Post to VIP Channel", callback_data=f"post_vip_{msg_id}")]
+    ])
 
-    res = await send_tg_photo_url(message.chat.id, poster_url, caption, preview_markup)
-    if not res.get("ok"):
-        await send_tg_message(message.chat.id, caption, preview_markup)
+    try:
+        await client.send_photo(chat_id=message.chat.id, photo=poster_url, caption=caption, reply_markup=preview_markup)
+    except Exception:
+        await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
     print(f"✅ Generated Control Preview for: {file_name}")
 
 # =========================================================
@@ -526,7 +499,7 @@ async def universal_message_handler(client: Client, message: Message):
             )
 
 # =========================================================
-# CALLBACK HANDLER: DISPATCH POSTS TO MAIN / VIP & PAYMENTS
+# CALLBACK HANDLER
 # =========================================================
 @app.on_callback_query()
 async def global_callback_handler(client: Client, callback: CallbackQuery):
@@ -540,117 +513,70 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
     # ACTION 1: POST TO MAIN CHANNEL (CLICKED INSIDE STORAGE)
     if data.startswith("post_main_"):
-        await callback.answer("⏳ Main Channel එකට Post කරමින් පවතී...")
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
         
-        main_markup = {
-            "inline_keyboard": [
-                [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
-                [
-                    {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
-                    {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
-                ]
+        main_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
+            [
+                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
             ]
-        }
+        ])
         
-        target = str(MAIN_CHANNEL).strip()
-        sent = False
-        err_msg = ""
-        
-        if callback.message.photo:
-            p = await client.download_media(callback.message.photo.file_id)
-            if p and os.path.exists(p):
-                try:
-                    with open(p, "rb") as f:
-                        form = aiohttp.FormData()
-                        form.add_field("chat_id", target)
-                        form.add_field("photo", f.read(), filename="poster.jpg")
-                        form.add_field("caption", caption)
-                        form.add_field("parse_mode", "HTML")
-                        form.add_field("reply_markup", json.dumps(main_markup))
-                        async with aiohttp.ClientSession() as s:
-                            async with s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=form) as r:
-                                res = await r.json()
-                                if res.get("ok"):
-                                    sent = True
-                                else:
-                                    err_msg = res.get("description", "Photo Send Error")
-                except Exception as e:
-                    err_msg = str(e)
-                finally:
-                    if os.path.exists(p):
-                        os.remove(p)
-
-        if not sent:
-            res = await send_tg_message(target, caption, main_markup)
-            if res.get("ok"):
-                sent = True
+        target = MAIN_CHANNEL
+        try:
+            if callback.message.photo:
+                # Direct Photo File ID pass without re-downloading
+                await client.send_photo(
+                    chat_id=target,
+                    photo=callback.message.photo.file_id,
+                    caption=caption,
+                    reply_markup=main_markup
+                )
             else:
-                if not err_msg:
-                    err_msg = res.get("description", "Message Send Error")
-
-        if sent:
+                await client.send_message(
+                    chat_id=target,
+                    text=caption,
+                    reply_markup=main_markup
+                )
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
-        else:
-            await callback.answer(f"❌ Main Fail: {err_msg[:100]}", show_alert=True)
+        except Exception as e:
+            print(f"Main Send Error: {e}")
+            await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
     # ACTION 2: POST TO VIP CHANNEL (CLICKED INSIDE STORAGE)
     if data.startswith("post_vip_"):
-        await callback.answer("⏳ VIP Channel එකට Post කරමින් පවතී...")
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
         
         clean_caption = re.sub(r"👇.*", "", caption, flags=re.DOTALL).strip()
         vip_caption = f"{clean_caption}\n\n👑 <b>VIP Direct File:</b> දැන්වීම් නොමැතිව download කරගන්න 👇"
         
-        vip_markup = {
-            "inline_keyboard": [
-                [{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"}]
-            ]
-        }
+        vip_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}")]
+        ])
         
-        target = str(VIP_CHANNEL).strip()
-        sent = False
-        err_msg = ""
-        
-        if callback.message.photo:
-            p = await client.download_media(callback.message.photo.file_id)
-            if p and os.path.exists(p):
-                try:
-                    with open(p, "rb") as f:
-                        form = aiohttp.FormData()
-                        form.add_field("chat_id", target)
-                        form.add_field("photo", f.read(), filename="poster.jpg")
-                        form.add_field("caption", vip_caption)
-                        form.add_field("parse_mode", "HTML")
-                        form.add_field("reply_markup", json.dumps(vip_markup))
-                        async with aiohttp.ClientSession() as s:
-                            async with s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=form) as r:
-                                res = await r.json()
-                                if res.get("ok"):
-                                    sent = True
-                                else:
-                                    err_msg = res.get("description", "VIP Photo Send Error")
-                except Exception as e:
-                    err_msg = str(e)
-                finally:
-                    if os.path.exists(p):
-                        os.remove(p)
-
-        if not sent:
-            res = await send_tg_message(target, vip_caption, vip_markup)
-            if res.get("ok"):
-                sent = True
+        target = VIP_CHANNEL
+        try:
+            if callback.message.photo:
+                await client.send_photo(
+                    chat_id=target,
+                    photo=callback.message.photo.file_id,
+                    caption=vip_caption,
+                    reply_markup=vip_markup
+                )
             else:
-                if not err_msg:
-                    err_msg = res.get("description", "VIP Message Send Error")
-
-        if sent:
+                await client.send_message(
+                    chat_id=target,
+                    text=vip_caption,
+                    reply_markup=vip_markup
+                )
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
-        else:
-            await callback.answer(f"❌ VIP Fail: {err_msg[:100]}", show_alert=True)
+        except Exception as e:
+            print(f"VIP Send Error: {e}")
+            await callback.answer(f"❌ VIP Fail: {str(e)[:100]}", show_alert=True)
         return
 
     # USER VERIFY CALLBACK
