@@ -36,7 +36,8 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "")
 
-STORAGE_CHANNEL = parse_target(os.environ.get("STORAGE_CHANNEL", "-1004413765578"))
+STORAGE_CHANNEL_RAW = os.environ.get("STORAGE_CHANNEL", "-1004413765578").strip()
+STORAGE_CHANNEL = parse_target(STORAGE_CHANNEL_RAW)
 VIP_CHANNEL = parse_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
 MAIN_CHANNEL = parse_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
 BACKUP_CHANNEL = parse_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
@@ -81,7 +82,9 @@ bot_users_col = db_client["MovieDB"]["bot_users"]
 manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 
-channel_post_lock = asyncio.Lock()
+# Safe Async Queue for 0% Drop
+upload_queue = asyncio.Queue()
+STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
 
 # =========================================================
 # WEB SERVER & AD GATE
@@ -190,8 +193,7 @@ async def send_tg_photo_url(chat_id: str, photo_url: str, caption_html: str, rep
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                res = await resp.json()
-                return res
+                return await resp.json()
     except Exception as e:
         return {"ok": False, "description": str(e)}
 
@@ -234,7 +236,7 @@ async def deliver_movie_file(chat_id: int, message_id: int, is_vip: bool = False
     )
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-    payload = {"chat_id": int(chat_id), "from_chat_id": str(STORAGE_CHANNEL), "message_id": int(message_id)}
+    payload = {"chat_id": int(chat_id), "from_chat_id": str(STORAGE_CHANNEL_RAW), "message_id": int(message_id)}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as resp:
@@ -317,24 +319,19 @@ VIP_DETAILS_TEXT = (
 )
 
 # =========================================================
-# PERFECT MOVIE CLEANER & OMDB MATCHER
+# MOVIE CLEANER & OMDB MATCHER
 # =========================================================
 def clean_movie_title(raw_name: str):
     name = os.path.splitext(raw_name)[0]
-    
-    # 1. Year extract
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", name)
     year = year_match.group(1) if year_match else None
     
-    # 2. Year eka nathuwa ithuru tika clean karanna
     if year:
         name = name.replace(year, " ")
 
-    # 3. Quality tags, brackets, dashes remove
     name = re.sub(r"[\[\(\{].*?[\]\)\}]", " ", name)
     name = re.split(r"\b(1080p|720p|480p|2160p|4k|hdr|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|aac|esub|cinexlk|hindi|tamil|sinhala|telugu|malayalam)\b", name, flags=re.IGNORECASE)[0]
     name = re.sub(r"[\._\-\+]+", " ", name)
-    
     cleaned = " ".join(name.split()).strip()
     return cleaned if cleaned else raw_name.strip(), year
 
@@ -358,32 +355,24 @@ async def fetch_metadata(raw_name: str):
                         }
     except Exception:
         pass
-    
-    # Fallback to local clean name if OMDb fails
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
-# STORAGE TO MAIN DISPATCH WORKER
+# ASYNC QUEUE WORKER (GUARANTEED NO DEADLOCKS)
 # =========================================================
-async def dispatch_storage_to_main(client: Client, message: Message):
+async def queue_worker():
     global BOT_USERNAME
-    async with channel_post_lock:
+    while True:
         try:
-            media = message.document or message.video
-            if not media:
-                return
-
-            file_name = getattr(media, "file_name", None) or message.caption or "Movie"
-            size_mb = round(media.file_size / (1024 * 1024), 2)
-            msg_id = message.id
-
-            if not BOT_USERNAME:
-                me = await client.get_me()
-                BOT_USERNAME = me.username
+            msg_data = await upload_queue.get()
+            file_name = msg_data["file_name"]
+            size_mb = msg_data["size_mb"]
+            file_size = msg_data["file_size"]
+            msg_id = msg_data["msg_id"]
 
             await files_col.update_one(
                 {"message_id": msg_id},
-                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
+                {"$set": {"file_name": file_name, "file_size": file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
                 upsert=True
             )
 
@@ -417,28 +406,42 @@ async def dispatch_storage_to_main(client: Client, message: Message):
             target = str(MAIN_CHANNEL).strip()
             poster_url = meta.get("poster") if (meta.get("poster") and meta["poster"].startswith("http")) else DEFAULT_POSTER
 
-            # 1. Send with Poster
             res = await send_tg_photo_url(target, poster_url, caption, markup)
-            
-            # 2. Safe Fallback to text message if photo fails
             if not res.get("ok"):
                 await send_tg_message(target, caption, markup)
 
-            print(f"✅ Auto-posted '{file_name}' ({size_mb} MB) to Main Channel")
+            print(f"✅ Successfully Processed & Auto-posted: {file_name}")
             await asyncio.sleep(2.5)
 
         except Exception as e:
-            print(f"❌ Error dispatching to main: {e}")
+            print(f"❌ Error in Queue Worker: {e}")
+        finally:
+            upload_queue.task_done()
 
 # =========================================================
-# HANDLER 1: STORAGE CHANNEL POSTS ONLY
+# HANDLER 1: STORAGE CHANNEL POSTS LISTENER
 # =========================================================
-@app.on_message(filters.chat([STORAGE_CHANNEL]) & (filters.document | filters.video))
+@app.on_message(filters.channel & (filters.document | filters.video))
 async def on_channel_upload(client: Client, message: Message):
-    asyncio.create_task(dispatch_storage_to_main(client, message))
+    if not message.chat:
+        return
+
+    chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
+    if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
+        media = message.document or message.video
+        if media:
+            file_name = getattr(media, "file_name", None) or message.caption or "Movie"
+            size_mb = round(media.file_size / (1024 * 1024), 2)
+            await upload_queue.put({
+                "file_name": file_name,
+                "file_size": media.file_size,
+                "size_mb": size_mb,
+                "msg_id": message.id
+            })
+            print(f"📥 Queued: {file_name} (Queue Size: {upload_queue.qsize()})")
 
 # =========================================================
-# HANDLER 2: PRIVATE COMMANDS ONLY (/start)
+# HANDLER 2: PRIVATE COMMANDS (/start)
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start_cmd(client: Client, message: Message):
@@ -741,6 +744,9 @@ async def main():
     me = await app.get_me()
     BOT_USERNAME = me.username
     print(f"🤖 Bot Started as @{BOT_USERNAME}")
+
+    # Start Queue Worker Task
+    asyncio.create_task(queue_worker())
 
     web_app = web.Application()
     web_app.add_routes(routes)
