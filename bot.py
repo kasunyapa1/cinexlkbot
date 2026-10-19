@@ -294,6 +294,16 @@ def get_vip_options_markup():
         [InlineKeyboardButton(f"🇱🇰 Bank Transfer - Rs. {VIP_LKR_PRICE} (Save Rs. {savings} 🔥)", callback_data="pay_vip_bank")]
     ])
 
+VIP_DETAILS_TEXT = (
+    "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n"
+    "✨ **VIP සාමාජිකත්වයේ වාසි:**\n"
+    "• කිසිදු දැන්වීමක් නොමැත (100% No Ads Direct Files)\n"
+    "• Direct Files ක්ෂණිකව ලබාගත හැක\n"
+    "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n"
+    "• පැය 6ක Auto-Delete කාලයක් හිමිවීම\n\n"
+    "👇 **ගෙවීම් කිරීමට කැමති ආකාරය තෝරන්න:**"
+)
+
 # =========================================================
 # MOVIE METADATA CLEANER & FETCHER
 # =========================================================
@@ -371,7 +381,7 @@ async def dispatch_storage_to_main(client: Client, message: Message):
                 [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
                 [
                     {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
-                    {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=vip"}
+                    {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
                 ]
             ]
         }
@@ -392,7 +402,7 @@ async def dispatch_storage_to_main(client: Client, message: Message):
                         [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
                         [
                             InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=vip")
+                            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
                         ]
                     ]))
                     os.remove(t)
@@ -499,7 +509,7 @@ async def handle_forward_to_vip(client: Client, message: Message):
         await status.edit_text(f"❌ VIP Post Error!")
 
 # =========================================================
-# START COMMAND (INSTANT PARAMETER DISPATCH)
+# START COMMAND (RELIABLE PARAMETER ROUTING)
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start_cmd(client: Client, message: Message):
@@ -507,28 +517,33 @@ async def handle_start_cmd(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
 
-    # VIP File
+    # 1. VIP MENU (WHEN BUY VIP PASS CLICKED OR /start vip)
+    if param in ["buyvip", "vip", "buystar_vip"]:
+        await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
+        return
+
+    # 2. VIP DIRECT FILE
     if param.startswith("vipfile_"):
         mid = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:**")
         await deliver_movie_file(user_id, mid, is_vip=True)
         return
 
-    # Token 1
+    # 3. TOKEN 1 VERIFIED
     if param.startswith("tok1_"):
         mid = param.split("_")[2]
         step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
         await message.reply_text("🎉 **Step 1 සාර්ථකයි!**\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]]))
         return
 
-    # Token 2
+    # 4. TOKEN 2 VERIFIED
     if param.startswith("tok2_"):
         mid = int(param.split("_")[2])
         await message.reply_text("🎉 **සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:**")
         await deliver_movie_file(user_id, mid, is_vip=False)
         return
 
-    # Single Star Buy
+    # 5. SINGLE MOVIE STARS BUY
     if param.startswith("buy_"):
         mid = param.split("_")[1]
         ok, err = await send_tg_invoice(user_id, "⚡ Direct Movie File", "දැන්වීම් නොමැතිව direct Telegram file එක ලබාගැනීමට.", f"single_{mid}", SINGLE_STAR_PRICE)
@@ -536,32 +551,19 @@ async def handle_start_cmd(client: Client, message: Message):
             await message.reply_text(f"⚠️ Stars Error: `{err}`")
         return
 
-    # VIP Menu (Monthly VIP Pass with Stars & Bank Transfer)
-    if param == "vip":
-        vip_text = (
-            "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n"
-            "✨ **VIP සාමාජිකත්වයේ වාසි:**\n"
-            "• කිසිදු දැන්වීමක් නොමැත (100% No Ads)\n"
-            "• Direct Files ක්ෂණිකව ලබාගත හැක\n"
-            "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n\n"
-            "👇 **ගෙවීම් කිරීමට කැමති ආකාරය තෝරන්න:**"
-        )
-        await message.reply_text(vip_text, reply_markup=get_vip_options_markup())
-        return
-
-    # Force Sub Check
+    # 6. FORCE SUB CHECK
     if not await check_access(user_id):
         await message.reply_text("🔒 **චිත්‍රපට ලබාගැනීමට පෙර අපගේ Channels වලට Join වන්න:**", reply_markup=await get_fsub_markup(param))
         return
 
-    # Step 1 initiator
+    # 7. MAIN CHANNEL FREE ADS INITIATOR
     if param.startswith("adstep1_"):
         mid = param.split("_")[1]
         step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
         await message.reply_text("🎬 **Download Verification (Step 1 of 2):**\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
         return
 
-    # Default
+    # 8. DEFAULT WELCOME (ONLY IF NO PARAMETER)
     await message.reply_text(
         "👋 **සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!**\n\n"
         "🔍 Movie එකේ නම එවන්න.\n"
@@ -587,8 +589,8 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     mid = param.split("_")[1]
                     step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                     await client.send_message(user_id, "🎬 **Step 1 of 2:**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
-                elif param == "vip":
-                    await client.send_message(user_id, "👑 **Cinex LK VIP Pass**", reply_markup=get_vip_options_markup())
+                elif param in ["buyvip", "vip", "buystar_vip"]:
+                    await client.send_message(user_id, VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 elif param.startswith("buy_"):
                     mid = param.split("_")[1]
                     await send_tg_invoice(user_id, "⚡ Direct Movie File", "No Ads File", f"single_{mid}", SINGLE_STAR_PRICE)
@@ -598,14 +600,14 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී Verify ඔබන්න.", show_alert=True)
         return
 
-    # 1. Pay VIP with Stars Callback
+    # Pay VIP with Stars Callback
     if data == "pay_vip_stars":
         ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Access (No Ads)", "vip_sub", VIP_STAR_PRICE)
         if not ok:
             await callback.message.reply_text(f"⚠️ Stars Invoice Error: `{err}`")
         return
 
-    # 2. Pay VIP with Bank Transfer Callback
+    # Pay VIP with Bank Transfer Callback
     if data == "pay_vip_bank":
         ref = f"CX-{random.randint(10000, 99999)}"
         username = f"@{callback.from_user.username}" if callback.from_user.username else "No Username"
@@ -737,7 +739,7 @@ async def main():
     await app.start()
     me = await app.get_me()
     BOT_USERNAME = me.username
-    print(f"🤖 Bot Started Successfully as @{BOT_USERNAME}")
+    print(f"🤖 Bot Started as @{BOT_USERNAME}")
 
     web_app = web.Application()
     web_app.add_routes(routes)
