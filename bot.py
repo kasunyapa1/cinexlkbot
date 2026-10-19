@@ -425,7 +425,7 @@ async def download_image_bytes(url: str):
     return None
 
 # =========================================================
-# HELPER: DISPATCH MOVIE POST (IN-MEMORY PHOTO GUARANTEE)
+# HELPER: DISPATCH MOVIE POST (EXPLICIT ERROR REPORTING)
 # =========================================================
 async def dispatch_movie_post(client: Client, media, file_name: str, msg_id: int, post_to_main: bool = True, post_to_vip: bool = True):
     size_mb = round(media.file_size / (1024 * 1024), 2)
@@ -469,61 +469,93 @@ async def dispatch_movie_post(client: Client, media, file_name: str, msg_id: int
         "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
     )
 
-    # 1. Resolve photo object safely (Byte buffer or file_id)
-    photo_obj = None
+    photo_bytes = None
     if meta.get("poster"):
-        photo_obj = await download_image_bytes(meta["poster"])
+        photo_bytes = await download_image_bytes(meta["poster"])
 
-    if not photo_obj and hasattr(media, "thumbs") and media.thumbs:
+    # Fallback to Telegram thumb
+    thumb_path = None
+    if not photo_bytes and hasattr(media, "thumbs") and media.thumbs:
         try:
             thumb_path = await client.download_media(media.thumbs[0].file_id)
-            if thumb_path and os.path.exists(thumb_path):
-                photo_obj = thumb_path
         except Exception:
-            photo_obj = media.thumbs[0].file_id
+            pass
 
-    # 2. POST TO MAIN CHANNEL
+    # 1. POST TO MAIN CHANNEL
     if post_to_main and MAIN_CHANNEL:
+        target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
         try:
-            target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
-            if photo_obj:
-                if isinstance(photo_obj, io.BytesIO):
-                    photo_obj.seek(0)
-                await client.send_photo(chat_id=target_main, photo=photo_obj, caption=post_caption, reply_markup=main_markup)
+            if photo_bytes:
+                photo_bytes.seek(0)
+                await client.send_photo(chat_id=target_main, photo=photo_bytes, caption=post_caption, reply_markup=main_markup)
+            elif thumb_path and os.path.exists(thumb_path):
+                await client.send_photo(chat_id=target_main, photo=thumb_path, caption=post_caption, reply_markup=main_markup)
             else:
                 await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
         except Exception as e:
             print(f"Main post error: {e}")
             try:
-                await client.send_message(chat_id=MAIN_CHANNEL, text=post_caption, reply_markup=main_markup)
+                await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
             except Exception:
                 pass
 
-    # 3. POST TO VIP CHANNEL (NO DUPLICATE TO MAIN)
+    # 2. POST TO VIP CHANNEL (WITH EXPLICIT ERROR RETURN)
+    vip_error = None
     if post_to_vip and VIP_CHANNEL:
         target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
         sent_vip = False
 
-        if photo_obj:
-            try:
-                if isinstance(photo_obj, io.BytesIO):
-                    photo_obj.seek(0)
-                await client.send_photo(chat_id=target_vip, photo=photo_obj, caption=post_caption, reply_markup=vip_markup)
+        # Try sending photo via Pyrogram
+        try:
+            if photo_bytes:
+                photo_bytes.seek(0)
+                await client.send_photo(chat_id=target_vip, photo=photo_bytes, caption=post_caption, reply_markup=vip_markup)
                 sent_vip = True
-            except Exception as e:
-                print(f"VIP send_photo error: {e}")
-                sent_vip = False
+            elif thumb_path and os.path.exists(thumb_path):
+                await client.send_photo(chat_id=target_vip, photo=thumb_path, caption=post_caption, reply_markup=vip_markup)
+                sent_vip = True
+        except Exception as e:
+            vip_error = str(e)
+            print(f"VIP send_photo failed: {e}")
 
+        # Fallback to Text message
         if not sent_vip:
             try:
                 await client.send_message(chat_id=target_vip, text=post_caption, reply_markup=vip_markup)
+                sent_vip = True
             except Exception as e:
-                print(f"VIP send_message error: {e}")
+                vip_error = str(e)
+                print(f"VIP send_message failed: {e}")
 
-    # Cleanup temp thumbnail file if created
-    if isinstance(photo_obj, str) and os.path.exists(photo_obj):
+        # Final HTTP Fallback
+        if not sent_vip:
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": int(str(VIP_CHANNEL)),
+                    "text": post_caption,
+                    "reply_markup": {
+                        "inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]]
+                    },
+                    "parse_mode": "Markdown"
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload) as r:
+                        resp_data = await r.json()
+                        if resp_data.get("ok"):
+                            sent_vip = True
+                        else:
+                            vip_error = resp_data.get("description", "Unknown Telegram Error")
+            except Exception as e:
+                vip_error = str(e)
+
+        if not sent_vip:
+            raise Exception(f"VIP Channel එකට Post කිරීම අසාර්ථකයි! Error: {vip_error}")
+
+    # Cleanup temp thumbnail
+    if thumb_path and os.path.exists(thumb_path):
         try:
-            os.remove(photo_obj)
+            os.remove(thumb_path)
         except Exception:
             pass
 
@@ -583,9 +615,9 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
     status = await message.reply_text("⏳ මෙම චිත්‍රපටය Poster & Details සමඟ VIP Channel එකට පමණක් Post කරමින් පවතී...")
     try:
         await dispatch_movie_post(client, media, file_name, msg_id, post_to_main=False, post_to_vip=True)
-        await status.edit_text(f"✅ **'{file_name}'** Poster සහ Details සහිතව සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
+        await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Post විය!")
     except Exception as e:
-        await status.edit_text(f"❌ Auto-post දෝෂය: {e}")
+        await status.edit_text(f"❌ **VIP Post කිරීමේ දෝෂය:** `{e}`\n\n📌 කරුණාකර Bot VIP Channel එකේ Admin කර 'Post Messages' අවසරය ලබාදී ඇත්දැයි බලන්න.")
 
 # =========================================================
 # START COMMAND (RELIABLE PARAMETER ROUTING)
