@@ -289,7 +289,7 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
         return False
 
 # =========================================================
-# VIP CHECK & CHANNEL ACCESS (SAFE VERIFICATION)
+# VIP CHECK & CHANNEL ACCESS
 # =========================================================
 async def is_vip_user(user_id: int) -> bool:
     try:
@@ -425,142 +425,7 @@ async def download_image_bytes(url: str):
     return None
 
 # =========================================================
-# HELPER: DISPATCH MOVIE POST (EXPLICIT ERROR REPORTING)
-# =========================================================
-async def dispatch_movie_post(client: Client, media, file_name: str, msg_id: int, post_to_main: bool = True, post_to_vip: bool = True):
-    size_mb = round(media.file_size / (1024 * 1024), 2)
-
-    await files_col.update_one(
-        {"message_id": msg_id},
-        {"$set": {
-            "file_name": file_name,
-            "file_size": media.file_size,
-            "message_id": msg_id,
-            "created_at": datetime.utcnow()
-        }, "$setOnInsert": {"download_count": 0}},
-        upsert=True
-    )
-
-    get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"
-    vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"
-    vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
-
-    main_buttons = [
-        [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
-        [
-            InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
-        ]
-    ]
-    main_markup = InlineKeyboardMarkup(main_buttons)
-
-    vip_buttons = [
-        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_url)]
-    ]
-    vip_markup = InlineKeyboardMarkup(vip_buttons)
-
-    meta = await fetch_movie_metadata_online(file_name)
-    post_caption = (
-        f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-        f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
-        f"🎭 **Genres:** `{meta['genres']}`\n"
-        f"📦 **Size:** `{size_mb} MB`\n\n"
-        f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-        "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
-    )
-
-    photo_bytes = None
-    if meta.get("poster"):
-        photo_bytes = await download_image_bytes(meta["poster"])
-
-    # Fallback to Telegram thumb
-    thumb_path = None
-    if not photo_bytes and hasattr(media, "thumbs") and media.thumbs:
-        try:
-            thumb_path = await client.download_media(media.thumbs[0].file_id)
-        except Exception:
-            pass
-
-    # 1. POST TO MAIN CHANNEL
-    if post_to_main and MAIN_CHANNEL:
-        target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
-        try:
-            if photo_bytes:
-                photo_bytes.seek(0)
-                await client.send_photo(chat_id=target_main, photo=photo_bytes, caption=post_caption, reply_markup=main_markup)
-            elif thumb_path and os.path.exists(thumb_path):
-                await client.send_photo(chat_id=target_main, photo=thumb_path, caption=post_caption, reply_markup=main_markup)
-            else:
-                await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
-        except Exception as e:
-            print(f"Main post error: {e}")
-            try:
-                await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
-            except Exception:
-                pass
-
-    # 2. POST TO VIP CHANNEL (WITH EXPLICIT ERROR RETURN)
-    vip_error = None
-    if post_to_vip and VIP_CHANNEL:
-        target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
-        sent_vip = False
-
-        # Try sending photo via Pyrogram
-        try:
-            if photo_bytes:
-                photo_bytes.seek(0)
-                await client.send_photo(chat_id=target_vip, photo=photo_bytes, caption=post_caption, reply_markup=vip_markup)
-                sent_vip = True
-            elif thumb_path and os.path.exists(thumb_path):
-                await client.send_photo(chat_id=target_vip, photo=thumb_path, caption=post_caption, reply_markup=vip_markup)
-                sent_vip = True
-        except Exception as e:
-            vip_error = str(e)
-            print(f"VIP send_photo failed: {e}")
-
-        # Fallback to Text message
-        if not sent_vip:
-            try:
-                await client.send_message(chat_id=target_vip, text=post_caption, reply_markup=vip_markup)
-                sent_vip = True
-            except Exception as e:
-                vip_error = str(e)
-                print(f"VIP send_message failed: {e}")
-
-        # Final HTTP Fallback
-        if not sent_vip:
-            try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                payload = {
-                    "chat_id": int(str(VIP_CHANNEL)),
-                    "text": post_caption,
-                    "reply_markup": {
-                        "inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]]
-                    },
-                    "parse_mode": "Markdown"
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, json=payload) as r:
-                        resp_data = await r.json()
-                        if resp_data.get("ok"):
-                            sent_vip = True
-                        else:
-                            vip_error = resp_data.get("description", "Unknown Telegram Error")
-            except Exception as e:
-                vip_error = str(e)
-
-        if not sent_vip:
-            raise Exception(f"VIP Channel එකට Post කිරීම අසාර්ථකයි! Error: {vip_error}")
-
-    # Cleanup temp thumbnail
-    if thumb_path and os.path.exists(thumb_path):
-        try:
-            os.remove(thumb_path)
-        except Exception:
-            pass
-
-# =========================================================
-# AUTO-POST STORAGE TO CHANNELS (MAIN + VIP)
+# AUTO-POST STORAGE TO MAIN CHANNEL
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
@@ -589,35 +454,175 @@ async def handle_storage_upload(client: Client, message: Message):
             return
 
         file_name = media.file_name or "Unknown Movie"
+        size_mb = round(media.file_size / (1024 * 1024), 2)
         msg_id = message.id
 
-        await dispatch_movie_post(client, media, file_name, msg_id, post_to_main=True, post_to_vip=True)
+        await files_col.update_one(
+            {"message_id": msg_id},
+            {"$set": {
+                "file_name": file_name,
+                "file_size": media.file_size,
+                "message_id": msg_id,
+                "created_at": datetime.utcnow()
+            }, "$setOnInsert": {"download_count": 0}},
+            upsert=True
+        )
+
+        get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"
+        vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+
+        main_buttons = [
+            [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
+            [
+                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
+            ]
+        ]
+        main_markup = InlineKeyboardMarkup(main_buttons)
+
+        meta = await fetch_movie_metadata_online(file_name)
+        post_caption = (
+            f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+            f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
+            f"🎭 **Genres:** `{meta['genres']}`\n"
+            f"📦 **Size:** `{size_mb} MB`\n\n"
+            f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+            "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+        )
+
+        photo_bytes = None
+        if meta.get("poster"):
+            photo_bytes = await download_image_bytes(meta["poster"])
+
+        thumb_path = None
+        if not photo_bytes and hasattr(media, "thumbs") and media.thumbs:
+            try:
+                thumb_path = await client.download_media(media.thumbs[0].file_id)
+            except Exception:
+                pass
+
+        if MAIN_CHANNEL:
+            target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
+            try:
+                if photo_bytes:
+                    photo_bytes.seek(0)
+                    await client.send_photo(chat_id=target_main, photo=photo_bytes, caption=post_caption, reply_markup=main_markup)
+                elif thumb_path and os.path.exists(thumb_path):
+                    await client.send_photo(chat_id=target_main, photo=thumb_path, caption=post_caption, reply_markup=main_markup)
+                else:
+                    await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
+            except Exception as e:
+                print(f"Main post error: {e}")
+                try:
+                    await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
+                except Exception:
+                    pass
+
+        if thumb_path and os.path.exists(thumb_path):
+            try:
+                os.remove(thumb_path)
+            except Exception:
+                pass
 
     except Exception as e:
         print(f"❌ Storage Upload error: {e}")
 
 # =========================================================
-# FORWARDED POST HANDLER (ADMIN FORWARD TO BOT -> VIP ONLY)
+# FORWARDED POST HANDLER (MAIN POST FORWARD -> VIP AUTO-POST)
 # =========================================================
 @app.on_message(filters.private & filters.forwarded)
 async def handle_admin_forwarded_post(client: Client, message: Message):
     if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
         return
 
-    media = message.document or message.video
-    if not media:
-        await message.reply_text("⚠️ කරුණාකර Movie Video හෝ Document එකක් සහිත Post එකක් Forward කරන්න.")
-        return
+    # Extract original text or caption from the forwarded message
+    original_caption = message.caption or message.text or ""
 
-    file_name = media.file_name or "Unknown Movie"
-    msg_id = message.forward_from_message_id or message.id
+    # Extract target Storage Message ID
+    target_msg_id = None
+    if message.reply_markup and message.reply_markup.inline_keyboard:
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url and ("start=adstep1_" in btn.url or "start=buy_" in btn.url or "start=vipfile_" in btn.url):
+                    m = re.search(r"start=(?:adstep1|buy|vipfile)_(\d+)", btn.url)
+                    if m:
+                        target_msg_id = int(m.group(1))
+                        break
+            if target_msg_id:
+                break
 
-    status = await message.reply_text("⏳ මෙම චිත්‍රපටය Poster & Details සමඟ VIP Channel එකට පමණක් Post කරමින් පවතී...")
+    # If forwarded as raw video/document
+    if not target_msg_id:
+        target_msg_id = message.forward_from_message_id or message.id
+
+    # Find file info in DB
+    file_doc = await files_col.find_one({"message_id": target_msg_id})
+    file_name = file_doc.get("file_name", "Movie") if file_doc else "Movie"
+
+    # Construct clean VIP caption without free ads instructions
+    if original_caption:
+        clean_caption = re.sub(r"👇.*චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:?.*", "", original_caption, flags=re.DOTALL).strip()
+    else:
+        meta = await fetch_movie_metadata_online(file_name)
+        clean_caption = (
+            f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+            f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
+            f"🎭 **Genres:** `{meta['genres']}`\n\n"
+            f"📖 **Plot:** {meta['plot'][:250]}..."
+        )
+
+    vip_caption = f"{clean_caption}\n\n👑 **VIP Pass:** දැන්වීම් නොමැතිව direct download කරගන්න 👇"
+
+    vip_direct_url = f"https://t.me/{BOT_USERNAME}?start=vipfile_{target_msg_id}"
+    vip_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_url)]
+    ])
+
+    target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
+    status = await message.reply_text("⏳ මෙම පෝස්ට් එක Photo & Direct Link සහිතව VIP Channel එකට දමමින් පවතී...")
+
+    sent_vip = False
+    downloaded_photo = None
+
     try:
-        await dispatch_movie_post(client, media, file_name, msg_id, post_to_main=False, post_to_vip=True)
-        await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Post විය!")
+        # Case A: Forwarded message already has a photo
+        if message.photo:
+            downloaded_photo = await client.download_media(message.photo.file_id)
+            await client.send_photo(chat_id=target_vip, photo=downloaded_photo, caption=vip_caption, reply_markup=vip_markup)
+            sent_vip = True
+
+        # Case B: Forwarded message is a video/document with a thumbnail
+        elif (message.video and message.video.thumbs) or (message.document and message.document.thumbs):
+            thumb = (message.video or message.document).thumbs[0]
+            downloaded_photo = await client.download_media(thumb.file_id)
+            await client.send_photo(chat_id=target_vip, photo=downloaded_photo, caption=vip_caption, reply_markup=vip_markup)
+            sent_vip = True
+
+        # Case C: Try fetching poster online
+        if not sent_vip:
+            meta = await fetch_movie_metadata_online(file_name)
+            if meta.get("poster"):
+                b = await download_image_bytes(meta["poster"])
+                if b:
+                    await client.send_photo(chat_id=target_vip, photo=b, caption=vip_caption, reply_markup=vip_markup)
+                    sent_vip = True
+
+        # Case D: Fallback to text message if no photo
+        if not sent_vip:
+            await client.send_message(chat_id=target_vip, text=vip_caption, reply_markup=vip_markup)
+            sent_vip = True
+
+        await status.edit_text(f"✅ **'{file_name}'** Photo සහ Direct Link සහිතව VIP Channel එකට සාර්ථකව Post කරන ලදී!")
+
     except Exception as e:
-        await status.edit_text(f"❌ **VIP Post කිරීමේ දෝෂය:** `{e}`\n\n📌 කරුණාකර Bot VIP Channel එකේ Admin කර 'Post Messages' අවසරය ලබාදී ඇත්දැයි බලන්න.")
+        await status.edit_text(f"❌ **VIP Post කිරීමේ දෝෂය:** `{e}`")
+
+    finally:
+        if downloaded_photo and os.path.exists(downloaded_photo):
+            try:
+                os.remove(downloaded_photo)
+            except Exception:
+                pass
 
 # =========================================================
 # START COMMAND (RELIABLE PARAMETER ROUTING)
