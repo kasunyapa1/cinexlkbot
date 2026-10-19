@@ -82,7 +82,6 @@ bot_users_col = db_client["MovieDB"]["bot_users"]
 manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 
-# Safe Async Queue for 0% Drop
 upload_queue = asyncio.Queue()
 STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
 
@@ -358,7 +357,7 @@ async def fetch_metadata(raw_name: str):
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
-# ASYNC QUEUE WORKER (GUARANTEED NO DEADLOCKS)
+# ASYNC QUEUE WORKER
 # =========================================================
 async def queue_worker():
     global BOT_USERNAME
@@ -419,13 +418,11 @@ async def queue_worker():
             upload_queue.task_done()
 
 # =========================================================
-# HANDLER 1: STORAGE CHANNEL POSTS LISTENER
+# UNIVERSAL STORAGE LISTENER (HANDLES BOTH CHANNEL_POST & MESSAGE)
 # =========================================================
-@app.on_message(filters.channel & (filters.document | filters.video))
-async def on_channel_upload(client: Client, message: Message):
+async def process_storage_incoming(message: Message):
     if not message.chat:
         return
-
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         media = message.document or message.video
@@ -439,6 +436,14 @@ async def on_channel_upload(client: Client, message: Message):
                 "msg_id": message.id
             })
             print(f"📥 Queued: {file_name} (Queue Size: {upload_queue.qsize()})")
+
+@app.on_channel_post()
+async def on_channel_post_receiver(client: Client, message: Message):
+    await process_storage_incoming(message)
+
+@app.on_message(filters.channel)
+async def on_channel_msg_receiver(client: Client, message: Message):
+    await process_storage_incoming(message)
 
 # =========================================================
 # HANDLER 2: PRIVATE COMMANDS (/start)
@@ -745,7 +750,6 @@ async def main():
     BOT_USERNAME = me.username
     print(f"🤖 Bot Started as @{BOT_USERNAME}")
 
-    # Start Queue Worker Task
     asyncio.create_task(queue_worker())
 
     web_app = web.Application()
