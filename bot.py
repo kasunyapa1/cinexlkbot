@@ -71,7 +71,6 @@ requests_col = db_client["MovieDB"]["movie_requests"]
 awaiting_request = set()
 STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
 
-# 50k bulk upload wena kota channel flood block nowenna lock eka
 channel_post_lock = asyncio.Lock()
 
 # =========================================================
@@ -150,7 +149,7 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# TELEGRAM HTTP ENGINE (STARS & CHANNEL SENDER)
+# TELEGRAM HTTP ENGINE (STARS & MESSAGES)
 # =========================================================
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -346,179 +345,7 @@ async def fetch_metadata(raw_name: str):
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
-# AUTO-POST FROM STORAGE TO MAIN CHANNEL (BULK-SAFE QUEUE)
-# =========================================================
-async def dispatch_storage_to_main(client: Client, message: Message):
-    global BOT_USERNAME
-    async with channel_post_lock:
-        try:
-            media = message.document or message.video
-            if not media:
-                return
-
-            file_name = media.file_name or "Unknown Movie"
-            size_mb = round(media.file_size / (1024 * 1024), 2)
-            msg_id = message.id
-
-            if not BOT_USERNAME:
-                me = await client.get_me()
-                BOT_USERNAME = me.username
-
-            # Save to DB
-            await files_col.update_one(
-                {"message_id": msg_id},
-                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
-                upsert=True
-            )
-
-            meta = await fetch_metadata(file_name)
-            rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
-            caption = (
-                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-                f"⭐ **IMDb Rating:** `{rating_str}`\n"
-                f"🎭 **Genres:** `{meta['genres']}`\n"
-                f"📦 **Size:** `{size_mb} MB`\n\n"
-                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
-            )
-
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
-                    [
-                        {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
-                        {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
-                    ]
-                ]
-            }
-
-            target = str(MAIN_CHANNEL_RAW).strip()
-            sent = False
-
-            # Primary: Send HD Poster URL
-            if meta.get("poster") and meta["poster"].startswith("http"):
-                res = await send_tg_photo_url(target, meta["poster"], caption, markup)
-                if res.get("ok"):
-                    sent = True
-
-            # Secondary Fallback: Video Thumbnail
-            if not sent and hasattr(media, "thumbs") and media.thumbs:
-                try:
-                    t = await client.download_media(media.thumbs[0].file_id)
-                    if t and os.path.exists(t):
-                        await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
-                            [
-                                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
-                            ]
-                        ]))
-                        os.remove(t)
-                        sent = True
-                except Exception:
-                    pass
-
-            # Final Fallback: Text only if no photo
-            if not sent:
-                await send_tg_message(target, caption, markup)
-
-            print(f"✅ Auto-posted '{file_name}' to Main Channel")
-
-            # 50k bulk upload wunath Telegram rate limit wadinne nathi wenna thiyana safe delay eka
-            await asyncio.sleep(2.5)
-
-        except Exception as e:
-            print(f"❌ Error dispatching to main: {e}")
-
-# Catch ANY message from storage channel without restrictive Pyrogram filters
-@app.on_message()
-async def on_channel_upload(client: Client, message: Message):
-    if not message.chat:
-        return
-
-    chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
-    if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
-        if message.document or message.video:
-            asyncio.create_task(dispatch_storage_to_main(client, message))
-
-# =========================================================
-# FORWARD MAIN POST TO VIP CHANNEL HANDLER
-# =========================================================
-@app.on_message(filters.private & filters.forwarded)
-async def handle_forward_to_vip(client: Client, message: Message):
-    if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
-        return
-
-    orig = message.caption or message.text or ""
-    target_msg_id = None
-
-    if message.reply_markup and message.reply_markup.inline_keyboard:
-        for row in message.reply_markup.inline_keyboard:
-            for btn in row:
-                if btn.url and ("adstep1_" in btn.url or "buy_" in btn.url or "vipfile_" in btn.url):
-                    m = re.search(r"_(\d+)", btn.url)
-                    if m:
-                        target_msg_id = int(m.group(1))
-                        break
-
-    if not target_msg_id:
-        m = re.search(r"🎬\s*\*\*(.*?)(?:\s*\(\d{4}\))?\*\*", orig)
-        if m:
-            doc = await files_col.find_one({"file_name": {"$regex": re.escape(m.group(1).strip()), "$options": "i"}})
-            if doc:
-                target_msg_id = doc.get("message_id")
-
-    if not target_msg_id:
-        target_msg_id = message.forward_from_message_id or message.id
-
-    f_doc = await files_col.find_one({"message_id": target_msg_id})
-    file_name = f_doc.get("file_name", "Movie") if f_doc else "Movie"
-
-    clean_caption = re.sub(r"👇.*", "", orig, flags=re.DOTALL).strip()
-    if not clean_caption:
-        meta = await fetch_metadata(file_name)
-        clean_caption = f"🎬 **{meta['title']} ({meta['year']})**\n\n⭐ **IMDb Rating:** `{meta['rating']} / 10`\n🎭 **Genres:** `{meta['genres']}`"
-
-    vip_caption = f"{clean_caption}\n\n👑 **VIP Direct File:** දැන්වීම් නොමැතිව download කරගන්න 👇"
-    vip_markup = {"inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{BOT_USERNAME}?start=vipfile_{target_msg_id}"}]]}
-
-    status = await message.reply_text("⏳ VIP Channel එකට Auto-Post කරමින් පවතී...")
-
-    sent = False
-    target_vip = str(VIP_CHANNEL_RAW).strip()
-
-    if message.photo:
-        p = await client.download_media(message.photo.file_id)
-        if p and os.path.exists(p):
-            try:
-                with open(p, "rb") as f:
-                    form = aiohttp.FormData()
-                    form.add_field("chat_id", target_vip)
-                    form.add_field("photo", f.read(), filename="poster.jpg")
-                    form.add_field("caption", vip_caption)
-                    form.add_field("parse_mode", "Markdown")
-                    form.add_field("reply_markup", json.dumps(vip_markup))
-                    async with aiohttp.ClientSession() as s:
-                        async with s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=form) as r:
-                            res = await r.json()
-                            if res.get("ok"):
-                                sent = True
-            except Exception:
-                pass
-            finally:
-                os.remove(p)
-
-    if not sent:
-        res = await send_tg_message(target_vip, vip_caption, vip_markup)
-        sent = res.get("ok", False)
-
-    if sent:
-        await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
-    else:
-        await status.edit_text(f"❌ VIP Post Error!")
-
-# =========================================================
-# START COMMAND (RELIABLE PARAMETER ROUTING)
+# PRIORITY 1: START COMMAND (PRIVATE MESSAGES ONLY)
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start_cmd(client: Client, message: Message):
@@ -542,7 +369,10 @@ async def handle_start_cmd(client: Client, message: Message):
     if param.startswith("tok1_"):
         mid = param.split("_")[2]
         step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
-        await message.reply_text("🎉 **Step 1 සාර්ථකයි!**\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]]))
+        await message.reply_text(
+            "🎉 **Step 1 සාර්ථකයි!**\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
+        )
         return
 
     # 4. TOKEN 2 VERIFIED
@@ -569,7 +399,10 @@ async def handle_start_cmd(client: Client, message: Message):
     if param.startswith("adstep1_"):
         mid = param.split("_")[1]
         step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
-        await message.reply_text("🎬 **Download Verification (Step 1 of 2):**\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
+        await message.reply_text(
+            "🎬 **Download Verification (Step 1 of 2):**\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
+        )
         return
 
     # 8. DEFAULT WELCOME (ONLY IF NO PARAMETER)
@@ -581,7 +414,7 @@ async def handle_start_cmd(client: Client, message: Message):
     )
 
 # =========================================================
-# CALLBACK HANDLERS
+# PRIORITY 2: CALLBACK HANDLERS
 # =========================================================
 @app.on_callback_query()
 async def global_callback_handler(client: Client, callback: CallbackQuery):
@@ -665,7 +498,177 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         return
 
 # =========================================================
-# ADMIN /addvip COMMAND (MANUAL BANK APPROVAL)
+# PRIORITY 3: FORWARD MAIN POST TO VIP CHANNEL HANDLER
+# =========================================================
+@app.on_message(filters.private & filters.forwarded)
+async def handle_forward_to_vip(client: Client, message: Message):
+    if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
+        return
+
+    orig = message.caption or message.text or ""
+    target_msg_id = None
+
+    if message.reply_markup and message.reply_markup.inline_keyboard:
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url and ("adstep1_" in btn.url or "buy_" in btn.url or "vipfile_" in btn.url):
+                    m = re.search(r"_(\d+)", btn.url)
+                    if m:
+                        target_msg_id = int(m.group(1))
+                        break
+
+    if not target_msg_id:
+        m = re.search(r"🎬\s*\*\*(.*?)(?:\s*\(\d{4}\))?\*\*", orig)
+        if m:
+            doc = await files_col.find_one({"file_name": {"$regex": re.escape(m.group(1).strip()), "$options": "i"}})
+            if doc:
+                target_msg_id = doc.get("message_id")
+
+    if not target_msg_id:
+        target_msg_id = message.forward_from_message_id or message.id
+
+    f_doc = await files_col.find_one({"message_id": target_msg_id})
+    file_name = f_doc.get("file_name", "Movie") if f_doc else "Movie"
+
+    clean_caption = re.sub(r"👇.*", "", orig, flags=re.DOTALL).strip()
+    if not clean_caption:
+        meta = await fetch_metadata(file_name)
+        clean_caption = f"🎬 **{meta['title']} ({meta['year']})**\n\n⭐ **IMDb Rating:** `{meta['rating']} / 10`\n🎭 **Genres:** `{meta['genres']}`"
+
+    vip_caption = f"{clean_caption}\n\n👑 **VIP Direct File:** දැන්වීම් නොමැතිව download කරගන්න 👇"
+    vip_markup = {"inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{BOT_USERNAME}?start=vipfile_{target_msg_id}"}]]}
+
+    status = await message.reply_text("⏳ VIP Channel එකට Auto-Post කරමින් පවතී...")
+
+    sent = False
+    target_vip = str(VIP_CHANNEL_RAW).strip()
+
+    if message.photo:
+        p = await client.download_media(message.photo.file_id)
+        if p and os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    form = aiohttp.FormData()
+                    form.add_field("chat_id", target_vip)
+                    form.add_field("photo", f.read(), filename="poster.jpg")
+                    form.add_field("caption", vip_caption)
+                    form.add_field("parse_mode", "Markdown")
+                    form.add_field("reply_markup", json.dumps(vip_markup))
+                    async with aiohttp.ClientSession() as s:
+                        async with s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=form) as r:
+                            res = await r.json()
+                            if res.get("ok"):
+                                sent = True
+            except Exception:
+                pass
+            finally:
+                os.remove(p)
+
+    if not sent:
+        res = await send_tg_message(target_vip, vip_caption, vip_markup)
+        sent = res.get("ok", False)
+
+    if sent:
+        await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
+    else:
+        await status.edit_text(f"❌ VIP Post Error!")
+
+# =========================================================
+# PRIORITY 4: AUTO-POST FROM STORAGE TO MAIN CHANNEL
+# =========================================================
+async def dispatch_storage_to_main(client: Client, message: Message):
+    global BOT_USERNAME
+    async with channel_post_lock:
+        try:
+            media = message.document or message.video
+            if not media:
+                return
+
+            file_name = media.file_name or "Unknown Movie"
+            size_mb = round(media.file_size / (1024 * 1024), 2)
+            msg_id = message.id
+
+            if not BOT_USERNAME:
+                me = await client.get_me()
+                BOT_USERNAME = me.username
+
+            # Save to DB
+            await files_col.update_one(
+                {"message_id": msg_id},
+                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
+                upsert=True
+            )
+
+            meta = await fetch_metadata(file_name)
+            rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
+            caption = (
+                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+                f"⭐ **IMDb Rating:** `{rating_str}`\n"
+                f"🎭 **Genres:** `{meta['genres']}`\n"
+                f"📦 **Size:** `{size_mb} MB`\n\n"
+                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+            )
+
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
+                    [
+                        {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
+                        {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
+                    ]
+                ]
+            }
+
+            target = str(MAIN_CHANNEL_RAW).strip()
+            sent = False
+
+            # Primary: Send HD Poster URL
+            if meta.get("poster") and meta["poster"].startswith("http"):
+                res = await send_tg_photo_url(target, meta["poster"], caption, markup)
+                if res.get("ok"):
+                    sent = True
+
+            # Secondary Fallback: Video Thumbnail
+            if not sent and hasattr(media, "thumbs") and media.thumbs:
+                try:
+                    t = await client.download_media(media.thumbs[0].file_id)
+                    if t and os.path.exists(t):
+                        await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
+                            [
+                                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+                                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
+                            ]
+                        ]))
+                        os.remove(t)
+                        sent = True
+                except Exception:
+                    pass
+
+            # Final Fallback: Text only
+            if not sent:
+                await send_tg_message(target, caption, markup)
+
+            print(f"✅ Auto-posted '{file_name}' to Main Channel")
+            await asyncio.sleep(2.5)
+
+        except Exception as e:
+            print(f"❌ Error dispatching to main: {e}")
+
+# Catch only channel uploads from Storage (Does NOT affect private user messages)
+@app.on_message(filters.chat([int(STORAGE_CHANNEL_RAW) if STORAGE_CHANNEL_RAW.lstrip("-").isdigit() else STORAGE_CHANNEL_RAW]) | (filters.channel & ~filters.private))
+async def on_channel_upload(client: Client, message: Message):
+    if not message.chat:
+        return
+
+    chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
+    if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
+        if message.document or message.video:
+            asyncio.create_task(dispatch_storage_to_main(client, message))
+
+# =========================================================
+# ADMIN /addvip COMMAND
 # =========================================================
 @app.on_message(filters.command("addvip") & filters.private)
 async def admin_add_vip_handler(client: Client, message: Message):
@@ -708,7 +711,7 @@ async def admin_add_vip_handler(client: Client, message: Message):
         await message.reply_text(f"⚠️ Invite Error: {e}")
 
 # =========================================================
-# PAYMENT PRECHECKOUT & SUCCESS (STARS AUTO-DELIVERY)
+# PAYMENT PRECHECKOUT & SUCCESS
 # =========================================================
 @app.on_raw_update()
 async def handle_precheckout(client: Client, update, users, chats):
