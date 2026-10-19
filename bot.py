@@ -71,7 +71,7 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=64,
+    workers=32,
     sleep_threshold=60
 )
 
@@ -320,48 +320,77 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
     return InlineKeyboardMarkup(buttons)
 
 # =========================================================
-# INTERNET MOVIE METADATA & POSTER SCRAPER (ULTRA-FAST)
+# SMART METADATA & POSTER ENGINE (ACCURATE & RELIABLE)
 # =========================================================
 def clean_file_title(raw_name: str):
     name = os.path.splitext(raw_name)[0]
-    name = re.sub(r"[\[\(\.\_\-\]\)]+", " ", name)
+    # Replace dots, underscores, dashes with space
+    name = re.sub(r"[\._\-\[\]\(\)]+", " ", name)
+    
+    # Extract 4-digit year (1900-2099)
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", name)
     year = year_match.group(1) if year_match else None
 
-    cleaned = re.sub(
-        r"\b(1080p|720p|480p|2160p|4k|hdr|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|aac|esub|cinexlk|tg|hindi|tamil|sinhala)\b.*",
-        "",
+    # Cut off at quality, audio, codec or site tags
+    cleaned = re.split(
+        r"\b(1080p|720p|480p|2160p|4k|hdr|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|aac|esub|cinexlk|hindi|tamil|sinhala|telugu|malayalam)\b",
         name,
         flags=re.IGNORECASE
-    )
+    )[0]
+    
     if year:
         cleaned = cleaned.replace(year, "")
-    cleaned = cleaned.strip()
+    
+    cleaned = " ".join(cleaned.split()).strip()
     return cleaned if cleaned else raw_name, year
 
 async def fetch_movie_metadata_online(raw_file_name: str):
     clean_title, year = clean_file_title(raw_file_name)
-    api_url = f"https://www.omdbapi.com/?t={urllib.parse.quote(clean_title)}&y={year or ''}&apikey=trilogy"
+    query_title = clean_title.strip()
+    
+    # Primary API: OMDb API
+    api_url = f"https://www.omdbapi.com/?t={urllib.parse.quote(query_title)}&y={year or ''}&apikey=trilogy"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("Response") == "True":
                         poster = data.get("Poster") if data.get("Poster") and data.get("Poster") != "N/A" else None
                         return {
-                            "title": data.get("Title", clean_title),
+                            "title": data.get("Title", query_title.title()),
                             "year": data.get("Year", year or "N/A"),
                             "rating": data.get("imdbRating", "N/A"),
-                            "genres": data.get("Genre", "N/A"),
-                            "plot": data.get("Plot", "No plot available."),
+                            "genres": data.get("Genre", "Cinema"),
+                            "plot": data.get("Plot", "Directly uploaded to Cinex LK library."),
                             "poster": poster
                         }
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ OMDb API primary error: {e}")
+
+    # Fallback retry without year if year was slightly off
+    if year:
+        fallback_url = f"https://www.omdbapi.com/?t={urllib.parse.quote(query_title)}&apikey=trilogy"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(fallback_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("Response") == "True":
+                            poster = data.get("Poster") if data.get("Poster") and data.get("Poster") != "N/A" else None
+                            return {
+                                "title": data.get("Title", query_title.title()),
+                                "year": data.get("Year", year),
+                                "rating": data.get("imdbRating", "N/A"),
+                                "genres": data.get("Genre", "Cinema"),
+                                "plot": data.get("Plot", "Directly uploaded to Cinex LK library."),
+                                "poster": poster
+                            }
+        except Exception:
+            pass
 
     return {
-        "title": clean_title.title(),
+        "title": query_title.title(),
         "year": year or "N/A",
         "rating": "N/A",
         "genres": "Cinema",
@@ -374,14 +403,14 @@ async def download_image_bytes(url: str):
         return None
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
                     b = io.BytesIO(data)
                     b.name = "poster.jpg"
                     return b
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Poster download error: {e}")
     return None
 
 # =========================================================
@@ -413,7 +442,7 @@ async def send_telegram_http_message(chat_id: str, text: str, reply_markup: dict
             return await resp.json()
 
 # =========================================================
-# INDEPENDENT ASYNC WORKER: PROCESS BULK STORAGE UPLOADS
+# INDEPENDENT ASYNC WORKER: PROCESS STORAGE UPLOADS
 # =========================================================
 async def process_storage_movie_upload(client: Client, message: Message):
     global BOT_USERNAME
@@ -453,20 +482,25 @@ async def process_storage_movie_upload(client: Client, message: Message):
         ]
         main_markup = InlineKeyboardMarkup(main_buttons)
 
+        # 1. Fetch metadata online with generous timeout
         meta = await fetch_movie_metadata_online(file_name)
+        
+        rating_display = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
         post_caption = (
             f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-            f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
+            f"⭐ **IMDb Rating:** `{rating_display}`\n"
             f"🎭 **Genres:** `{meta['genres']}`\n"
             f"📦 **Size:** `{size_mb} MB`\n\n"
             f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
             "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
         )
 
+        # 2. Download Official Poster bytes
         photo_bytes = None
         if meta.get("poster"):
             photo_bytes = await download_image_bytes(meta["poster"])
 
+        # 3. Fallback to Telegram native thumb if poster download fails
         thumb_path = None
         if not photo_bytes and hasattr(media, "thumbs") and media.thumbs:
             try:
@@ -474,6 +508,7 @@ async def process_storage_movie_upload(client: Client, message: Message):
             except Exception:
                 pass
 
+        # 4. Dispatch to Main Channel
         if MAIN_CHANNEL:
             target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
             sent = False
@@ -491,7 +526,8 @@ async def process_storage_movie_upload(client: Client, message: Message):
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
                 except Exception as e:
-                    await asyncio.sleep(1.5)
+                    print(f"⚠️ Main channel send attempt {attempt} error: {e}")
+                    await asyncio.sleep(2)
 
             if not sent:
                 try:
@@ -506,10 +542,10 @@ async def process_storage_movie_upload(client: Client, message: Message):
                 pass
 
     except Exception as e:
-        print(f"❌ Storage worker error for msg {message.id}: {e}")
+        print(f"❌ Storage worker exception for msg {message.id}: {e}")
 
 # =========================================================
-# AUTO-POST STORAGE TO MAIN CHANNEL (NON-BLOCKING PARALLEL QUEUE)
+# AUTO-POST STORAGE TO MAIN CHANNEL (NON-BLOCKING)
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
@@ -526,7 +562,6 @@ async def handle_storage_upload(client: Client, message: Message):
         if message.from_user and message.from_user.is_self:
             return
 
-        # Execute immediately as an independent task so bulk uploads never block each other
         asyncio.create_task(process_storage_movie_upload(client, message))
 
     except Exception as e:
@@ -582,9 +617,10 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
         clean_caption = re.sub(r"👇.*චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:?.*", "", original_caption, flags=re.DOTALL).strip()
     else:
         meta = await fetch_movie_metadata_online(file_name)
+        rating_display = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
         clean_caption = (
             f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-            f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
+            f"⭐ **IMDb Rating:** `{rating_display}`\n"
             f"🎭 **Genres:** `{meta['genres']}`\n\n"
             f"📖 **Plot:** {meta['plot'][:250]}..."
         )
@@ -702,7 +738,7 @@ async def handle_start(client: Client, message: Message):
         except Exception:
             pass
 
-    # 4. STARS SINGLE PURCHASE INVOICE (VIA START PARAM)
+    # 4. STARS SINGLE PURCHASE INVOICE
     if param.startswith("buy_"):
         msg_id = param.split("_")[1]
         ok, err = await send_stars_invoice(
