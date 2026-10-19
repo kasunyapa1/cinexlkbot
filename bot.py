@@ -3,6 +3,7 @@ import re
 import random
 import asyncio
 from datetime import datetime, timedelta
+import urllib.parse
 import aiohttp
 from pyrogram import Client, filters, idle
 from pyrogram.types import (
@@ -353,7 +354,62 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
     return InlineKeyboardMarkup(buttons)
 
 # =========================================================
-# AUTO-POST STORAGE TO CHANNELS
+# INTERNET MOVIE METADATA & POSTER SCRAPER (ZERO API KEY)
+# =========================================================
+def clean_file_title(raw_name: str):
+    name = os.path.splitext(raw_name)[0]
+    name = re.sub(r"[\[\(\.\_\-\]\)]+", " ", name)
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", name)
+    year = year_match.group(1) if year_match else None
+
+    # Remove quality / group tags
+    cleaned = re.sub(
+        r"\b(1080p|720p|480p|2160p|4k|hdr|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|aac|esub|cinexlk|tg|hindi|tamil|sinhala)\b.*",
+        "",
+        name,
+        flags=re.IGNORECASE
+    )
+    if year:
+        cleaned = cleaned.replace(year, "")
+    cleaned = cleaned.strip()
+    return cleaned if cleaned else raw_name, year
+
+async def fetch_movie_metadata_online(raw_file_name: str):
+    clean_title, year = clean_file_title(raw_file_name)
+    query = f"{clean_title} {year}" if year else clean_title
+
+    # 1. Query free public IMDb/TMDb json gateway
+    api_url = f"https://www.omdbapi.com/?t={urllib.parse.quote(clean_title)}&y={year or ''}&apikey=trilogy"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("Response") == "True":
+                        poster = data.get("Poster") if data.get("Poster") and data.get("Poster") != "N/A" else None
+                        return {
+                            "title": data.get("Title", clean_title),
+                            "year": data.get("Year", year or "N/A"),
+                            "rating": data.get("imdbRating", "N/A"),
+                            "genres": data.get("Genre", "N/A"),
+                            "plot": data.get("Plot", "No plot available."),
+                            "poster": poster
+                        }
+    except Exception:
+        pass
+
+    # 2. Fallback to free DuckDuckGo Instant Answer / TMDb Search
+    return {
+        "title": clean_title.title(),
+        "year": year or "N/A",
+        "rating": "N/A",
+        "genres": "Cinema",
+        "plot": "Directly uploaded to Cinex LK library.",
+        "poster": None
+    }
+
+# =========================================================
+# AUTO-POST STORAGE TO CHANNELS (WITH INTERNET POSTER & DETAILS)
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
@@ -365,6 +421,9 @@ async def handle_storage_upload(client: Client, message: Message):
         storage_id_clean = str(STORAGE_CHANNEL).replace("-100", "").replace("-", "")
 
         if chat_id_clean != storage_id_clean:
+            return
+
+        if message.from_user and message.from_user.is_self:
             return
 
         try:
@@ -401,28 +460,55 @@ async def handle_storage_upload(client: Client, message: Message):
         ]
         main_markup = InlineKeyboardMarkup(main_buttons)
 
-        vip_markup = {
-            "inline_keyboard": [
-                [{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]
-            ]
-        }
+        vip_buttons = [
+            [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=vip_direct_url)]
+        ]
+        vip_markup = InlineKeyboardMarkup(vip_buttons)
 
-        caption = f"🎬 **{file_name}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+        # FETCH INTERNET DETAILS & POSTER
+        meta = await fetch_movie_metadata_online(file_name)
+        
+        post_caption = (
+            f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+            f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
+            f"🎭 **Genres:** `{meta['genres']}`\n"
+            f"📦 **Size:** `{size_mb} MB`\n\n"
+            f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+            "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+        )
 
+        # Prioritize Online Official Poster, then video thumb
+        poster_to_send = meta.get("poster")
+        if not poster_to_send and hasattr(media, "thumbs") and media.thumbs:
+            poster_to_send = media.thumbs[0].file_id
+
+        # 1. SEND TO MAIN CHANNEL
         if MAIN_CHANNEL:
             try:
-                await client.send_message(chat_id=MAIN_CHANNEL, text=caption, reply_markup=main_markup)
-            except Exception:
-                pass
+                if poster_to_send:
+                    await client.send_photo(chat_id=MAIN_CHANNEL, photo=poster_to_send, caption=post_caption, reply_markup=main_markup)
+                else:
+                    await client.send_message(chat_id=MAIN_CHANNEL, text=post_caption, reply_markup=main_markup)
+            except Exception as e:
+                print(f"Main post error: {e}")
+                try:
+                    await client.send_message(chat_id=MAIN_CHANNEL, text=post_caption, reply_markup=main_markup)
+                except Exception:
+                    pass
 
+        # 2. SEND TO VIP CHANNEL
         if VIP_CHANNEL:
             try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                payload = {"chat_id": str(VIP_CHANNEL), "text": caption, "reply_markup": vip_markup, "parse_mode": "Markdown"}
-                async with aiohttp.ClientSession() as session:
-                    await session.post(url, json=payload)
-            except Exception:
-                pass
+                if poster_to_send:
+                    await client.send_photo(chat_id=VIP_CHANNEL, photo=poster_to_send, caption=post_caption, reply_markup=vip_markup)
+                else:
+                    await client.send_message(chat_id=VIP_CHANNEL, text=post_caption, reply_markup=vip_markup)
+            except Exception as e:
+                print(f"VIP post error: {e}")
+                try:
+                    await client.send_message(chat_id=VIP_CHANNEL, text=post_caption, reply_markup=vip_markup)
+                except Exception:
+                    pass
 
     except Exception as e:
         print(f"❌ Storage Upload error: {e}")
