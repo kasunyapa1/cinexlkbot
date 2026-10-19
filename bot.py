@@ -71,7 +71,7 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=32,
+    workers=64,
     sleep_threshold=60
 )
 
@@ -83,7 +83,6 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 
 awaiting_request = set()
-post_queue_lock = asyncio.Lock()
 
 # =========================================================
 # WEB SERVER & SAME-PAGE AD GATE
@@ -321,7 +320,7 @@ async def get_dual_fsub_buttons(client: Client, start_param: str = "") -> Inline
     return InlineKeyboardMarkup(buttons)
 
 # =========================================================
-# INTERNET MOVIE METADATA & POSTER SCRAPER
+# INTERNET MOVIE METADATA & POSTER SCRAPER (ULTRA-FAST)
 # =========================================================
 def clean_file_title(raw_name: str):
     name = os.path.splitext(raw_name)[0]
@@ -345,7 +344,7 @@ async def fetch_movie_metadata_online(raw_file_name: str):
     api_url = f"https://www.omdbapi.com/?t={urllib.parse.quote(clean_title)}&y={year or ''}&apikey=trilogy"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("Response") == "True":
@@ -375,7 +374,7 @@ async def download_image_bytes(url: str):
         return None
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
                     b = io.BytesIO(data)
@@ -414,109 +413,103 @@ async def send_telegram_http_message(chat_id: str, text: str, reply_markup: dict
             return await resp.json()
 
 # =========================================================
-# ASYNC WORKER: PROCESS STORAGE UPLOADS SAFELY (NO DROPS)
+# INDEPENDENT ASYNC WORKER: PROCESS BULK STORAGE UPLOADS
 # =========================================================
 async def process_storage_movie_upload(client: Client, message: Message):
     global BOT_USERNAME
-    async with post_queue_lock:
-        try:
-            media = message.document or message.video
-            if not media:
-                return
+    try:
+        media = message.document or message.video
+        if not media:
+            return
 
-            file_name = media.file_name or "Unknown Movie"
-            size_mb = round(media.file_size / (1024 * 1024), 2)
-            msg_id = message.id
+        file_name = media.file_name or "Unknown Movie"
+        size_mb = round(media.file_size / (1024 * 1024), 2)
+        msg_id = message.id
 
-            if not BOT_USERNAME:
-                me = await client.get_me()
-                BOT_USERNAME = me.username
+        if not BOT_USERNAME:
+            me = await client.get_me()
+            BOT_USERNAME = me.username
 
-            await files_col.update_one(
-                {"message_id": msg_id},
-                {"$set": {
-                    "file_name": file_name,
-                    "file_size": media.file_size,
-                    "message_id": msg_id,
-                    "created_at": datetime.utcnow()
-                }, "$setOnInsert": {"download_count": 0}},
-                upsert=True
-            )
+        await files_col.update_one(
+            {"message_id": msg_id},
+            {"$set": {
+                "file_name": file_name,
+                "file_size": media.file_size,
+                "message_id": msg_id,
+                "created_at": datetime.utcnow()
+            }, "$setOnInsert": {"download_count": 0}},
+            upsert=True
+        )
 
-            get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"
-            vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=vip"
+        get_movie_ad_url = f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"
+        vip_buy_url = f"https://t.me/{BOT_USERNAME}?start=buystar_vip"
 
-            main_buttons = [
-                [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
-                [
-                    InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                    InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
-                ]
+        main_buttons = [
+            [InlineKeyboardButton("📥 Fast Download (Ads)", url=get_movie_ad_url)],
+            [
+                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=vip_buy_url)
             ]
-            main_markup = InlineKeyboardMarkup(main_buttons)
+        ]
+        main_markup = InlineKeyboardMarkup(main_buttons)
 
-            meta = await fetch_movie_metadata_online(file_name)
-            post_caption = (
-                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-                f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
-                f"🎭 **Genres:** `{meta['genres']}`\n"
-                f"📦 **Size:** `{size_mb} MB`\n\n"
-                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
-            )
+        meta = await fetch_movie_metadata_online(file_name)
+        post_caption = (
+            f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+            f"⭐ **IMDb Rating:** `{meta['rating']} / 10`\n"
+            f"🎭 **Genres:** `{meta['genres']}`\n"
+            f"📦 **Size:** `{size_mb} MB`\n\n"
+            f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+            "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+        )
 
-            photo_bytes = None
-            if meta.get("poster"):
-                photo_bytes = await download_image_bytes(meta["poster"])
+        photo_bytes = None
+        if meta.get("poster"):
+            photo_bytes = await download_image_bytes(meta["poster"])
 
-            thumb_path = None
-            if not photo_bytes and hasattr(media, "thumbs") and media.thumbs:
+        thumb_path = None
+        if not photo_bytes and hasattr(media, "thumbs") and media.thumbs:
+            try:
+                thumb_path = await client.download_media(media.thumbs[0].file_id)
+            except Exception:
+                pass
+
+        if MAIN_CHANNEL:
+            target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
+            sent = False
+            for attempt in range(3):
                 try:
-                    thumb_path = await client.download_media(media.thumbs[0].file_id)
-                except Exception:
-                    pass
-
-            if MAIN_CHANNEL:
-                target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
-                sent = False
-                for attempt in range(2):
-                    try:
-                        if photo_bytes:
-                            photo_bytes.seek(0)
-                            await client.send_photo(chat_id=target_main, photo=photo_bytes, caption=post_caption, reply_markup=main_markup)
-                        elif thumb_path and os.path.exists(thumb_path):
-                            await client.send_photo(chat_id=target_main, photo=thumb_path, caption=post_caption, reply_markup=main_markup)
-                        else:
-                            await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
-                        sent = True
-                        break
-                    except FloodWait as fw:
-                        print(f"⚠️ FloodWait hit: Sleeping {fw.value}s")
-                        await asyncio.sleep(fw.value)
-                    except Exception as e:
-                        print(f"Main post error (attempt {attempt}): {e}")
-                        await asyncio.sleep(2)
-
-                if not sent:
-                    try:
+                    if photo_bytes:
+                        photo_bytes.seek(0)
+                        await client.send_photo(chat_id=target_main, photo=photo_bytes, caption=post_caption, reply_markup=main_markup)
+                    elif thumb_path and os.path.exists(thumb_path):
+                        await client.send_photo(chat_id=target_main, photo=thumb_path, caption=post_caption, reply_markup=main_markup)
+                    else:
                         await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
-                    except Exception:
-                        pass
+                    sent = True
+                    break
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                except Exception as e:
+                    await asyncio.sleep(1.5)
 
-            if thumb_path and os.path.exists(thumb_path):
+            if not sent:
                 try:
-                    os.remove(thumb_path)
+                    await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
                 except Exception:
                     pass
 
-            # Safe delay between bulk posts to prevent Telegram Channel Rate Limiting
-            await asyncio.sleep(3)
+        if thumb_path and os.path.exists(thumb_path):
+            try:
+                os.remove(thumb_path)
+            except Exception:
+                pass
 
-        except Exception as e:
-            print(f"❌ Storage worker error for {message.id}: {e}")
+    except Exception as e:
+        print(f"❌ Storage worker error for msg {message.id}: {e}")
 
 # =========================================================
-# AUTO-POST STORAGE TO MAIN CHANNEL (NON-BLOCKING QUEUE)
+# AUTO-POST STORAGE TO MAIN CHANNEL (NON-BLOCKING PARALLEL QUEUE)
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
@@ -533,11 +526,11 @@ async def handle_storage_upload(client: Client, message: Message):
         if message.from_user and message.from_user.is_self:
             return
 
-        # Fire and forget background worker task so telegram doesn't drop bulk files
+        # Execute immediately as an independent task so bulk uploads never block each other
         asyncio.create_task(process_storage_movie_upload(client, message))
 
     except Exception as e:
-        print(f"❌ Storage Upload trigger error: {e}")
+        print(f"❌ Storage trigger error: {e}")
 
 # =========================================================
 # FORWARDED POST HANDLER (MAIN CHANNEL -> VIP AUTO-POST)
