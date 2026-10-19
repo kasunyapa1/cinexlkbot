@@ -11,9 +11,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery,
-    LabeledPrice,
-    PreCheckoutQuery
+    CallbackQuery
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -170,40 +168,27 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# TELEGRAM STARS INVOICE (OFFICIAL PYROGRAM STARS ENGINE)
+# TELEGRAM STARS INVOICE (CRASH-PROOF HTTP BOT API)
 # =========================================================
-async def send_stars_invoice(client: Client, chat_id: int, title: str, description: str, payload: str, stars: int):
+async def send_stars_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+    data = {
+        "chat_id": int(chat_id),
+        "title": title,
+        "description": description,
+        "payload": payload,
+        "provider_token": "",
+        "currency": "XTR",
+        "prices": [{"label": title, "amount": int(stars)}]
+    }
     try:
-        await client.send_invoice(
-            chat_id=chat_id,
-            title=title,
-            description=description,
-            payload=payload,
-            currency="XTR",
-            prices=[LabeledPrice(label=title, amount=stars)],
-            provider_token=""
-        )
-        return True
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                res = await resp.json()
+                return res.get("ok", False)
     except Exception as e:
-        print(f"⚠️ Stars Invoice Error: {e}")
-        # Fallback to direct HTTP API if Pyrogram internal fails
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-        data = {
-            "chat_id": int(chat_id),
-            "title": title,
-            "description": description,
-            "payload": payload,
-            "provider_token": "",
-            "currency": "XTR",
-            "prices": [{"label": title, "amount": int(stars)}]
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    res = await resp.json()
-                    return res.get("ok", False)
-        except Exception:
-            return False
+        print(f"⚠️ Stars Invoice HTTP Error: {e}")
+        return False
 
 # =========================================================
 # FILE SENDER WITH DYNAMIC TIMER & DOWNLOAD TRACKING
@@ -693,7 +678,6 @@ async def handle_start(client: Client, message: Message):
     if param.startswith("buy_"):
         msg_id = param.split("_")[1]
         sent = await send_stars_invoice(
-            client=client,
             chat_id=user_id,
             title="⚡ Direct Movie File (No Ads)",
             description=f"චිත්‍රපටය කිසිදු දැන්වීමක් නොමැතිව direct Telegram file එකක් ලෙස ලබාගැනීමට.",
@@ -1081,7 +1065,6 @@ async def vip_selection_callback(client: Client, callback: CallbackQuery):
 async def pay_vip_stars_handler(client: Client, callback: CallbackQuery):
     await callback.answer("⭐ Preparing Stars Invoice...")
     sent = await send_stars_invoice(
-        client=client,
         chat_id=callback.from_user.id,
         title="👑 Cinex LK VIP Pass (30 Days)",
         description="Cinex LK VIP Channel ප්‍රවේශය (No Ads + Direct Files)",
@@ -1096,7 +1079,6 @@ async def pay_single(client: Client, callback: CallbackQuery):
     msg_id = callback.data.split("_")[2]
     await callback.answer("⭐ Preparing Stars Invoice...")
     sent = await send_stars_invoice(
-        client=client,
         chat_id=callback.from_user.id,
         title="⚡ Direct Movie File (No Ads)",
         description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
@@ -1196,17 +1178,19 @@ async def admin_add_vip_handler(client: Client, message: Message):
         await message.reply_text(f"⚠️ Invite Error: {e}")
 
 # =========================================================
-# PAYMENT PRE-CHECKOUT & SUCCESS (OFFICIAL HANDLERS)
+# PAYMENT PRE-CHECKOUT & SUCCESS (RAW UPDATE BOT API HANDLERS)
 # =========================================================
-@app.on_pre_checkout_query()
-async def process_pre_checkout_query(client: Client, query: PreCheckoutQuery):
-    try:
-        await query.answer(ok=True)
-    except Exception as e:
-        print(f"⚠️ Pre-checkout query error: {e}")
+@app.on_raw_update()
+async def raw_update_handler(client: Client, update, users, chats):
+    if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
+        async with aiohttp.ClientSession() as session:
+            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
 
-@app.on_message(filters.successful_payment)
-async def process_successful_payment(client: Client, message: Message):
+payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
+
+@app.on_message(payment_filter)
+async def payment_success(client: Client, message: Message):
     payload = message.successful_payment.invoice_payload
 
     if payload.startswith("single_"):
