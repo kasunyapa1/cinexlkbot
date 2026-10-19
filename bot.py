@@ -58,7 +58,7 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=16
+    workers=32
 )
 
 db_client = AsyncIOMotorClient(MONGO_URI)
@@ -69,6 +69,10 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 
 awaiting_request = set()
+STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
+
+# 50k bulk upload wena kota channel flood block nowenna lock eka
+channel_post_lock = asyncio.Lock()
 
 # =========================================================
 # WEB SERVER & SAME-PAGE AD GATE
@@ -342,95 +346,100 @@ async def fetch_metadata(raw_name: str):
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
-# AUTO-POST FROM STORAGE TO MAIN CHANNEL
+# AUTO-POST FROM STORAGE TO MAIN CHANNEL (BULK-SAFE QUEUE)
 # =========================================================
 async def dispatch_storage_to_main(client: Client, message: Message):
     global BOT_USERNAME
-    try:
-        media = message.document or message.video
-        if not media:
-            return
+    async with channel_post_lock:
+        try:
+            media = message.document or message.video
+            if not media:
+                return
 
-        file_name = media.file_name or "Unknown Movie"
-        size_mb = round(media.file_size / (1024 * 1024), 2)
-        msg_id = message.id
+            file_name = media.file_name or "Unknown Movie"
+            size_mb = round(media.file_size / (1024 * 1024), 2)
+            msg_id = message.id
 
-        if not BOT_USERNAME:
-            me = await client.get_me()
-            BOT_USERNAME = me.username
+            if not BOT_USERNAME:
+                me = await client.get_me()
+                BOT_USERNAME = me.username
 
-        await files_col.update_one(
-            {"message_id": msg_id},
-            {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
-            upsert=True
-        )
+            # Save to DB
+            await files_col.update_one(
+                {"message_id": msg_id},
+                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
+                upsert=True
+            )
 
-        meta = await fetch_metadata(file_name)
-        rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
-        caption = (
-            f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-            f"⭐ **IMDb Rating:** `{rating_str}`\n"
-            f"🎭 **Genres:** `{meta['genres']}`\n"
-            f"📦 **Size:** `{size_mb} MB`\n\n"
-            f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-            "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
-        )
+            meta = await fetch_metadata(file_name)
+            rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
+            caption = (
+                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+                f"⭐ **IMDb Rating:** `{rating_str}`\n"
+                f"🎭 **Genres:** `{meta['genres']}`\n"
+                f"📦 **Size:** `{size_mb} MB`\n\n"
+                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+            )
 
-        markup = {
-            "inline_keyboard": [
-                [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
-                [
-                    {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
-                    {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
+                    [
+                        {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
+                        {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
+                    ]
                 ]
-            ]
-        }
+            }
 
-        target = str(MAIN_CHANNEL_RAW).strip()
-        sent = False
+            target = str(MAIN_CHANNEL_RAW).strip()
+            sent = False
 
-        if meta.get("poster") and meta["poster"].startswith("http"):
-            res = await send_tg_photo_url(target, meta["poster"], caption, markup)
-            if res.get("ok"):
-                sent = True
-
-        if not sent and hasattr(media, "thumbs") and media.thumbs:
-            try:
-                t = await client.download_media(media.thumbs[0].file_id)
-                if t and os.path.exists(t):
-                    await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
-                        [
-                            InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
-                        ]
-                    ]))
-                    os.remove(t)
+            # Primary: Send HD Poster URL
+            if meta.get("poster") and meta["poster"].startswith("http"):
+                res = await send_tg_photo_url(target, meta["poster"], caption, markup)
+                if res.get("ok"):
                     sent = True
-            except Exception:
-                pass
 
-        if not sent:
-            await send_tg_message(target, caption, markup)
+            # Secondary Fallback: Video Thumbnail
+            if not sent and hasattr(media, "thumbs") and media.thumbs:
+                try:
+                    t = await client.download_media(media.thumbs[0].file_id)
+                    if t and os.path.exists(t):
+                        await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
+                            [
+                                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+                                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
+                            ]
+                        ]))
+                        os.remove(t)
+                        sent = True
+                except Exception:
+                    pass
 
-        print(f"✅ Auto-posted '{file_name}' to Main Channel")
+            # Final Fallback: Text only if no photo
+            if not sent:
+                await send_tg_message(target, caption, markup)
 
-    except Exception as e:
-        print(f"❌ Error dispatching to main: {e}")
+            print(f"✅ Auto-posted '{file_name}' to Main Channel")
 
-@app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
+            # 50k bulk upload wunath Telegram rate limit wadinne nathi wenna thiyana safe delay eka
+            await asyncio.sleep(2.5)
+
+        except Exception as e:
+            print(f"❌ Error dispatching to main: {e}")
+
+# Catch ANY message from storage channel without restrictive Pyrogram filters
+@app.on_message()
 async def on_channel_upload(client: Client, message: Message):
     if not message.chat:
         return
-    
-    chat_str = str(message.chat.id)
-    storage_str = str(STORAGE_CHANNEL_RAW)
-    
-    clean_chat = chat_str.replace("-100", "").replace("-", "")
-    clean_storage = storage_str.replace("-100", "").replace("-", "")
 
-    if clean_chat == clean_storage or chat_str == storage_str:
-        asyncio.create_task(dispatch_storage_to_main(client, message))
+    chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
+    if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
+        if message.document or message.video:
+            asyncio.create_task(dispatch_storage_to_main(client, message))
 
 # =========================================================
 # FORWARD MAIN POST TO VIP CHANNEL HANDLER
@@ -517,7 +526,7 @@ async def handle_start_cmd(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
 
-    # 1. VIP MENU (WHEN BUY VIP PASS CLICKED OR /start vip)
+    # 1. VIP MENU (BUY VIP PASS CLICKED OR /start vip)
     if param in ["buyvip", "vip", "buystar_vip"]:
         await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
         return
