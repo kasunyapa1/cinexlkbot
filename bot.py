@@ -11,8 +11,7 @@ from pyrogram.types import (
     Message,
     CallbackQuery
 )
-from pyrogram.raw.functions.channels import GetMessages
-from pyrogram.raw.types import InputMessageID
+from pyrogram.errors import UserNotParticipant, ChatAdminRequired, PeerIdInvalid, RPCError
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -368,10 +367,6 @@ async def handle_storage_upload(client: Client, message: Message):
         if chat_id_clean != storage_id_clean:
             return
 
-        # Do not auto-post forward messages or bot's own internal messages
-        if message.from_user and message.from_user.is_self:
-            return
-
         try:
             peer = await client.resolve_peer(message.chat.id)
             if hasattr(peer, "access_hash"):
@@ -431,17 +426,6 @@ async def handle_storage_upload(client: Client, message: Message):
 
     except Exception as e:
         print(f"❌ Storage Upload error: {e}")
-
-@app.on_deleted_messages()
-async def handle_storage_delete(client: Client, messages: list):
-    try:
-        msg_ids = [m.id for m in messages if hasattr(m, "id")]
-        if msg_ids:
-            res = await files_col.delete_many({"message_id": {"$in": msg_ids}})
-            if res.deleted_count > 0:
-                print(f"🗑️ Storage Synced: Deleted {res.deleted_count} movies from Database.")
-    except Exception as e:
-        print(f"⚠️ Storage delete sync error: {e}")
 
 # =========================================================
 # START COMMAND (RELIABLE PARAMETER ROUTING)
@@ -583,35 +567,7 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
         await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
 
 # =========================================================
-# ZERO-POST SAFE STORAGE EXISTENCE CHECK (MTPROTO RAW RPC)
-# =========================================================
-async def check_file_exists_in_storage(message_id: int) -> bool:
-    try:
-        await restore_storage_peer()
-        peer = await app.resolve_peer(STORAGE_CHANNEL)
-        r = await app.invoke(
-            GetMessages(
-                channel=peer,
-                id=[InputMessageID(id=int(message_id))]
-            )
-        )
-        if hasattr(r, "messages") and len(r.messages) > 0:
-            m = r.messages[0]
-            # If message is empty/deleted
-            if m.__class__.__name__ == "MessageEmpty":
-                await files_col.delete_one({"message_id": int(message_id)})
-                return False
-            # Check if media exists
-            if hasattr(m, "media") and m.media:
-                return True
-        await files_col.delete_one({"message_id": int(message_id)})
-        return False
-    except Exception as e:
-        # If error occurs, fallback to DB without deleting
-        return True
-
-# =========================================================
-# MOVIE LIST WITH REAL-TIME STORAGE EXISTENCE VERIFICATION
+# MOVIE LIST (FAST, STABLE & REAL-TIME)
 # =========================================================
 @app.on_message(filters.command(["movielist", "movies"]) & filters.private)
 async def handle_movie_list(client: Client, message: Message):
@@ -625,20 +581,13 @@ async def send_movie_list_page(chat_id: int, user_id: int, page: int = 1, edit_m
     PAGE_SIZE = 10
     skip = (page - 1) * PAGE_SIZE
 
-    cursor = files_col.find({}).sort("_id", -1).skip(skip).limit(PAGE_SIZE * 2)
-    raw_movies = await cursor.to_list(length=PAGE_SIZE * 2)
-
-    valid_movies = []
-    for f in raw_movies:
-        if await check_file_exists_in_storage(f.get("message_id")):
-            valid_movies.append(f)
-        if len(valid_movies) == PAGE_SIZE:
-            break
-
     total_movies = await files_col.count_documents({})
     total_pages = max(1, (total_movies + PAGE_SIZE - 1) // PAGE_SIZE)
 
-    if not valid_movies:
+    cursor = files_col.find({}).sort("_id", -1).skip(skip).limit(PAGE_SIZE)
+    movies = await cursor.to_list(length=PAGE_SIZE)
+
+    if not movies:
         text = "📁 **දැනට චිත්‍රපට කිසිවක් එක් කර නොමැත.**"
         if edit_message_id:
             await app.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=text)
@@ -655,7 +604,7 @@ async def send_movie_list_page(chat_id: int, user_id: int, page: int = 1, edit_m
     text += "👇 **බාගත කිරීමට අවශ්‍ය චිත්‍රපටය තෝරන්න:**\n\n"
 
     buttons = []
-    for idx, f in enumerate(valid_movies, start=skip + 1):
+    for idx, f in enumerate(movies, start=skip + 1):
         name = f.get("file_name", "Unknown Movie")
         msg_id = f.get("message_id")
         target_param = f"vipfile_{msg_id}" if is_vip else f"adstep1_{msg_id}"
@@ -695,15 +644,8 @@ async def handle_trending(client: Client, message: Message):
         await message.reply_text("🔒 **මෙම පහසුකම භාවිතා කිරීමට Channels වලට Join වන්න:**", reply_markup=markup)
         return
 
-    cursor = files_col.find({}).sort("download_count", -1).limit(10)
-    top_candidates = await cursor.to_list(length=10)
-
-    top_movies = []
-    for f in top_candidates:
-        if await check_file_exists_in_storage(f.get("message_id")):
-            top_movies.append(f)
-        if len(top_movies) == 5:
-            break
+    cursor = files_col.find({}).sort("download_count", -1).limit(5)
+    top_movies = await cursor.to_list(length=5)
 
     if not top_movies:
         await message.reply_text("📊 දැනට Trending දත්ත කිසිවක් හමු නොවීය.")
@@ -725,27 +667,26 @@ async def handle_trending(client: Client, message: Message):
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 # =========================================================
-# ADMIN STORAGE SYNC TOOL (/syncmovies) - ZERO CHAT POSTS
+# ADMIN MOVIE DELETE COMMAND (/delmovie)
 # =========================================================
-@app.on_message(filters.command("syncmovies") & filters.private)
-async def admin_sync_movies(client: Client, message: Message):
+@app.on_message(filters.command("delmovie") & filters.private)
+async def admin_delete_movie(client: Client, message: Message):
     if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
         return
 
-    status_msg = await message.reply_text("🔄 Storage Channel එක නිහඬව පරීක්ෂා කරමින් පවතී...")
-    deleted_count = 0
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply_text("❌ **භාවිතය:** `/delmovie <චිත්‍රපටයේ නම>`")
+        return
 
-    cursor = files_col.find({})
-    all_movies = await cursor.to_list(length=1000)
+    target_name = args[1].strip()
+    regex = {"file_name": {"$regex": re.escape(target_name), "$options": "i"}}
+    res = await files_col.delete_many(regex)
 
-    for movie in all_movies:
-        msg_id = movie.get("message_id")
-        exists = await check_file_exists_in_storage(msg_id)
-        if not exists:
-            deleted_count += 1
-        await asyncio.sleep(0.05)
-
-    await status_msg.edit_text(f"✅ Sync සාර්ථකයි! Storage එකේ නොමැති පැරණි Movies `{deleted_count}` ක් Database එකෙන් ඉවත් කරන ලදී. (Duplicate posts 0)")
+    if res.deleted_count > 0:
+        await message.reply_text(f"✅ Database එකෙන් චිත්‍රපට `{res.deleted_count}` ක් සාර්ථකව ඉවත් කරන ලදී!")
+    else:
+        await message.reply_text("❌ එම නමින් චිත්‍රපටයක් Database එකේ හමු නොවීය.")
 
 # =========================================================
 # MOVIE REQUEST SYSTEM (/request)
@@ -802,7 +743,7 @@ async def save_and_confirm_request(client: Client, message: Message, user_id: in
 # =========================================================
 # SEARCH HANDLER
 # =========================================================
-@app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help", "addvip", "request", "trending", "movielist", "movies", "syncmovies"]))
+@app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help", "addvip", "request", "trending", "movielist", "movies", "delmovie"]))
 async def handle_search_and_request(client: Client, message: Message):
     user_id = message.from_user.id
 
@@ -819,15 +760,8 @@ async def handle_search_and_request(client: Client, message: Message):
 
     query = message.text.strip()
     regex = {"file_name": {"$regex": re.escape(query), "$options": "i"}}
-    cursor = files_col.find(regex).limit(5)
-    candidates = await cursor.to_list(length=5)
-
-    raw_results = []
-    for file in candidates:
-        if await check_file_exists_in_storage(file.get("message_id")):
-            raw_results.append(file)
-        if len(raw_results) == 3:
-            break
+    cursor = files_col.find(regex).limit(3)
+    raw_results = await cursor.to_list(length=3)
 
     if not raw_results:
         req_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Request This Movie", callback_data=f"make_req_{query[:30]}")]])
