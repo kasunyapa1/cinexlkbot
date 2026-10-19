@@ -11,7 +11,8 @@ from pyrogram.types import (
     Message,
     CallbackQuery
 )
-from pyrogram.errors import UserNotParticipant, ChatAdminRequired, PeerIdInvalid, RPCError
+from pyrogram.raw.functions.channels import GetMessages
+from pyrogram.raw.types import InputMessageID
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -269,7 +270,6 @@ async def send_file_with_auto_delete(chat_id: int, message_id: int, is_vip: bool
                         asyncio.create_task(auto_delete_file_task(chat_id, [sent_msg_id, warn_msg.id], delay, delete_notification))
                         return True
                     else:
-                        # Message no longer exists
                         await files_col.delete_one({"message_id": int(message_id)})
                         await app.send_message(chat_id=chat_id, text="❌ **මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.**")
                         return False
@@ -366,6 +366,10 @@ async def handle_storage_upload(client: Client, message: Message):
         storage_id_clean = str(STORAGE_CHANNEL).replace("-100", "").replace("-", "")
 
         if chat_id_clean != storage_id_clean:
+            return
+
+        # Do not auto-post forward messages or bot's own internal messages
+        if message.from_user and message.from_user.is_self:
             return
 
         try:
@@ -579,33 +583,31 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
         await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
 
 # =========================================================
-# RELIABLE STORAGE EXISTENCE CHECK (OFFICIAL TELEGRAM COPY TEST)
+# ZERO-POST SAFE STORAGE EXISTENCE CHECK (MTPROTO RAW RPC)
 # =========================================================
 async def check_file_exists_in_storage(message_id: int) -> bool:
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-        payload = {
-            "chat_id": int(str(STORAGE_CHANNEL)),
-            "from_chat_id": int(str(STORAGE_CHANNEL)),
-            "message_id": int(message_id)
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                res = await resp.json()
-                if res.get("ok"):
-                    # Delete the test-copied message immediately
-                    temp_id = res.get("result", {}).get("message_id")
-                    del_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
-                    await session.post(del_url, json={"chat_id": int(str(STORAGE_CHANNEL)), "message_id": temp_id})
-                    return True
-                else:
-                    err_desc = str(res.get("description", "")).lower()
-                    if "message to copy not found" in err_desc or "bad request" in err_desc:
-                        # Message was deleted from storage channel
-                        await files_col.delete_one({"message_id": int(message_id)})
-                        return False
-                    return True
-    except Exception:
+        await restore_storage_peer()
+        peer = await app.resolve_peer(STORAGE_CHANNEL)
+        r = await app.invoke(
+            GetMessages(
+                channel=peer,
+                id=[InputMessageID(id=int(message_id))]
+            )
+        )
+        if hasattr(r, "messages") and len(r.messages) > 0:
+            m = r.messages[0]
+            # If message is empty/deleted
+            if m.__class__.__name__ == "MessageEmpty":
+                await files_col.delete_one({"message_id": int(message_id)})
+                return False
+            # Check if media exists
+            if hasattr(m, "media") and m.media:
+                return True
+        await files_col.delete_one({"message_id": int(message_id)})
+        return False
+    except Exception as e:
+        # If error occurs, fallback to DB without deleting
         return True
 
 # =========================================================
@@ -723,26 +725,27 @@ async def handle_trending(client: Client, message: Message):
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 # =========================================================
-# ADMIN STORAGE SYNC TOOL (/syncmovies)
+# ADMIN STORAGE SYNC TOOL (/syncmovies) - ZERO CHAT POSTS
 # =========================================================
 @app.on_message(filters.command("syncmovies") & filters.private)
 async def admin_sync_movies(client: Client, message: Message):
     if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
         return
 
-    status_msg = await message.reply_text("🔄 Storage Channel එක පරීක්ෂා කරමින් පවතී...")
+    status_msg = await message.reply_text("🔄 Storage Channel එක නිහඬව පරීක්ෂා කරමින් පවතී...")
     deleted_count = 0
 
     cursor = files_col.find({})
-    all_movies = await cursor.to_list(length=500)
+    all_movies = await cursor.to_list(length=1000)
 
     for movie in all_movies:
         msg_id = movie.get("message_id")
         exists = await check_file_exists_in_storage(msg_id)
         if not exists:
             deleted_count += 1
+        await asyncio.sleep(0.05)
 
-    await status_msg.edit_text(f"✅ Sync සාර්ථකයි! Storage එකේ නොමැති පැරණි Movies `{deleted_count}` ක් Database එකෙන් ඉවත් කරන ලදී.")
+    await status_msg.edit_text(f"✅ Sync සාර්ථකයි! Storage එකේ නොමැති පැරණි Movies `{deleted_count}` ක් Database එකෙන් ඉවත් කරන ලදී. (Duplicate posts 0)")
 
 # =========================================================
 # MOVIE REQUEST SYSTEM (/request)
