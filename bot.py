@@ -55,9 +55,8 @@ BANK_DETAILS = os.environ.get(
     "🏢 **Branch:** Colombo"
 )
 
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "").strip()
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
-
 PRIMARY_AD_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
 
 PORT = int(os.environ.get("PORT", "8080"))
@@ -80,7 +79,6 @@ vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
-peers_col = db_client["MovieDB"]["channel_peers"]
 
 awaiting_request = set()
 
@@ -381,7 +379,7 @@ async def download_image_bytes(url: str):
     return None
 
 # =========================================================
-# HELPER: SEND HTTP TELEGRAM REQUEST (64-BIT PEER PROOF)
+# HELPER: SEND HTTP TELEGRAM REQUEST (64-BIT PROOF)
 # =========================================================
 async def send_telegram_http_photo(chat_id: str, photo_bytes: bytes, caption: str, reply_markup: dict):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -413,6 +411,7 @@ async def send_telegram_http_message(chat_id: str, text: str, reply_markup: dict
 # =========================================================
 @app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
 async def handle_storage_upload(client: Client, message: Message):
+    global BOT_USERNAME
     try:
         if not message.chat:
             return
@@ -433,6 +432,10 @@ async def handle_storage_upload(client: Client, message: Message):
         file_name = media.file_name or "Unknown Movie"
         size_mb = round(media.file_size / (1024 * 1024), 2)
         msg_id = message.id
+
+        if not BOT_USERNAME:
+            me = await client.get_me()
+            BOT_USERNAME = me.username
 
         await files_col.update_one(
             {"message_id": msg_id},
@@ -501,15 +504,21 @@ async def handle_storage_upload(client: Client, message: Message):
         print(f"❌ Storage Upload error: {e}")
 
 # =========================================================
-# FORWARDED POST HANDLER (FORWARD MAIN POST -> VIP AUTO-POST)
+# FORWARDED POST HANDLER (MAIN CHANNEL -> VIP AUTO-POST)
 # =========================================================
 @app.on_message(filters.private & filters.forwarded)
 async def handle_admin_forwarded_post(client: Client, message: Message):
+    global BOT_USERNAME
     if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
         return
 
+    if not BOT_USERNAME:
+        me = await client.get_me()
+        BOT_USERNAME = me.username
+
     original_caption = message.caption or message.text or ""
 
+    # Strategy 1: Check inline buttons
     target_msg_id = None
     if message.reply_markup and message.reply_markup.inline_keyboard:
         for row in message.reply_markup.inline_keyboard:
@@ -522,10 +531,24 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
             if target_msg_id:
                 break
 
+    # Strategy 2: Search title in DB if forward stripped buttons
+    file_doc = None
+    if target_msg_id:
+        file_doc = await files_col.find_one({"message_id": target_msg_id})
+    else:
+        title_match = re.search(r"🎬\s*\*\*(.*?)(?:\s*\(\d{4}\))?\*\*", original_caption)
+        if title_match:
+            movie_title = title_match.group(1).strip()
+            regex = {"file_name": {"$regex": re.escape(movie_title), "$options": "i"}}
+            file_doc = await files_col.find_one(regex)
+            if file_doc:
+                target_msg_id = file_doc.get("message_id")
+
     if not target_msg_id:
         target_msg_id = message.forward_from_message_id or message.id
+        if not file_doc:
+            file_doc = await files_col.find_one({"message_id": target_msg_id})
 
-    file_doc = await files_col.find_one({"message_id": target_msg_id})
     file_name = file_doc.get("file_name", "Movie") if file_doc else "Movie"
 
     if original_caption:
@@ -555,10 +578,8 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
     res = {}
 
     try:
-        # 1. Forwarded message has photo
         if message.photo:
             downloaded_photo_path = await client.download_media(message.photo.file_id)
-        # 2. Forwarded message is video with thumb
         elif (message.video and message.video.thumbs) or (message.document and message.document.thumbs):
             thumb = (message.video or message.document).thumbs[0]
             downloaded_photo_path = await client.download_media(thumb.file_id)
@@ -570,7 +591,6 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
             if res.get("ok"):
                 sent_vip = True
 
-        # 3. Fallback to online fetched poster
         if not sent_vip:
             meta = await fetch_movie_metadata_online(file_name)
             if meta.get("poster"):
@@ -580,7 +600,6 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
                     if res.get("ok"):
                         sent_vip = True
 
-        # 4. Fallback to text message
         if not sent_vip:
             res = await send_telegram_http_message(target_vip, vip_caption, vip_markup)
             if res.get("ok"):
@@ -742,7 +761,7 @@ async def callback_verify_handler(client: Client, callback: CallbackQuery):
         await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
 
 # =========================================================
-# MOVIE LIST (FAST, STABLE & REAL-TIME)
+# MOVIE LIST (FAST & STABLE)
 # =========================================================
 @app.on_message(filters.command(["movielist", "movies"]) & filters.private)
 async def handle_movie_list(client: Client, message: Message):
@@ -1193,9 +1212,11 @@ async def payment_success(client: Client, message: Message):
 # SERVER RUNNER
 # =========================================================
 async def main():
+    global BOT_USERNAME
     await app.start()
     me = await app.get_me()
-    print(f"🤖 Bot Started Successfully as @{me.username}")
+    BOT_USERNAME = me.username
+    print(f"🤖 Bot Started Successfully as @{BOT_USERNAME}")
 
     web_app = web.Application()
     web_app.add_routes(routes)
