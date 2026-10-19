@@ -444,7 +444,12 @@ async def handle_storage_upload(client: Client, message: Message):
 
         await files_col.update_one(
             {"message_id": msg_id},
-            {"$set": { "file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow() }, "$setOnInsert": {"download_count": 0}},
+            {"$set": {
+                "file_name": file_name,
+                "file_size": media.file_size,
+                "message_id": msg_id,
+                "created_at": datetime.utcnow()
+            }, "$setOnInsert": {"download_count": 0}},
             upsert=True
         )
 
@@ -880,4 +885,363 @@ async def admin_delete_movie(client: Client, message: Message):
 
     target_name = args[1].strip()
     regex = {"file_name": {"$regex": re.escape(target_name), "$options": "i"}}
-    res = await files_col.
+    res = await files_col.delete_many(regex)
+
+    if res.deleted_count > 0:
+        await message.reply_text(f"✅ Database එකෙන් චිත්‍රපට `{res.deleted_count}` ක් සාර්ථකව ඉවත් කරන ලදී!")
+    else:
+        await message.reply_text("❌ එම නමින් චිත්‍රපටයක් Database එකේ හමු නොවීය.")
+
+# =========================================================
+# MOVIE REQUEST SYSTEM (/request)
+# =========================================================
+@app.on_message(filters.command("request") & filters.private)
+async def handle_movie_request(client: Client, message: Message):
+    if not await check_user_access(client, message.from_user.id):
+        markup = await get_dual_fsub_buttons(client)
+        await message.reply_text("🔒 **චිත්‍රපට ඉල්ලීම් කිරීමට පෙර Channels වලට එක්වන්න:**", reply_markup=markup)
+        return
+
+    args = message.text.split(maxsplit=1)
+    user_id = message.from_user.id
+
+    if len(args) < 2:
+        awaiting_request.add(user_id)
+        await message.reply_text(
+            "📝 **ඔබට අවශ්‍ය චිත්‍රපටයේ නම Type කර මෙහි එවන්න:**\n\n"
+            "*(උදාහරණයක් ලෙස: `Avatar 2` හෝ `Spiderman No Way Home`)*"
+        )
+        return
+
+    movie_name = args[1].strip()
+    await save_and_confirm_request(client, message, user_id, movie_name)
+
+async def save_and_confirm_request(client: Client, message: Message, user_id: int, movie_name: str):
+    user = message.from_user
+    username = f"@{user.username}" if user.username else "No Username"
+
+    await requests_col.insert_one({
+        "user_id": user_id,
+        "name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
+        "username": username,
+        "movie_name": movie_name,
+        "status": "pending",
+        "created_at": datetime.utcnow()
+    })
+
+    await message.reply_text(
+        f"✅ **ඔබගේ චිත්‍රපට ඉල්ලීම සාර්ථකව සටහන් විය!**\n\n"
+        f"🎬 **චිත්‍රපටය:** `{movie_name}`\n\n"
+        "අප විසින් මෙම චිත්‍රපටය Upload කළ සැනින් Bot මඟින් ඔබට Notification පණිවිඩයක් එවනු ඇත."
+    )
+
+    if ADMIN_USER_ID:
+        try:
+            await client.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"🔔 **නව Movie Request එකක්!**\n\n🎬 චිත්‍රපටය: `{movie_name}`\n👤 User: {user.first_name} (`{user_id}`)"
+            )
+        except Exception:
+            pass
+
+# =========================================================
+# SEARCH HANDLER
+# =========================================================
+@app.on_message(filters.text & filters.incoming & filters.private & ~filters.command(["start", "help", "addvip", "request", "trending", "movielist", "movies", "delmovie"]))
+async def handle_search_and_request(client: Client, message: Message):
+    user_id = message.from_user.id
+
+    if user_id in awaiting_request:
+        awaiting_request.remove(user_id)
+        movie_name = message.text.strip()
+        await save_and_confirm_request(client, message, user_id, movie_name)
+        return
+
+    if not await check_user_access(client, user_id):
+        markup = await get_dual_fsub_buttons(client)
+        await message.reply_text("🔒 **චිත්‍රපට සෙවීමට පෙර Channels වලට එක්වන්න:**", reply_markup=markup)
+        return
+
+    query = message.text.strip()
+    regex = {"file_name": {"$regex": re.escape(query), "$options": "i"}}
+    cursor = files_col.find(regex).limit(3)
+    raw_results = await cursor.to_list(length=3)
+
+    if not raw_results:
+        req_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Request This Movie", callback_data=f"make_req_{query[:30]}")]])
+        await message.reply_text(
+            f"❌ **'{query}' චිත්‍රපටය හමු නොවීය.**\n\nනම නිවැරදිව type කරන්න හෝ පහත Button එක ඔබා මෙම චිත්‍රපටය Bot වෙත Request කරන්න.",
+            reply_markup=req_markup
+        )
+        return
+
+    is_vip = await is_vip_user(user_id)
+
+    for file in raw_results:
+        size_mb = round(file["file_size"] / (1024 * 1024), 2)
+        msg_id = file["message_id"]
+
+        caption = f"🎬 **{file['file_name']}**\n📦 **Size:** `{size_mb} MB`\n\n👇 **ලබාගැනීමට තෝරන්න:**"
+        
+        if is_vip:
+            buttons = [
+                [InlineKeyboardButton("⚡ VIP Direct Download", callback_data=f"vip_get_{msg_id}")]
+            ]
+        else:
+            buttons = [
+                [InlineKeyboardButton("📥 Download Movie (Free Ads)", callback_data=f"search_ad_{msg_id}")],
+                [
+                    InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", callback_data=f"buy_single_{msg_id}"),
+                    InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", callback_data="buy_vip_pass")
+                ]
+            ]
+        await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
+
+@app.on_callback_query(filters.regex(r"^vip_get_"))
+async def callback_vip_direct(client: Client, callback: CallbackQuery):
+    await callback.answer()
+    msg_id = int(callback.data.split("_")[2])
+    await client.send_message(chat_id=callback.from_user.id, text="👑 **VIP Direct File:**")
+    await send_file_with_auto_delete(chat_id=callback.from_user.id, message_id=msg_id, is_vip=True)
+
+@app.on_callback_query(filters.regex(r"^make_req_"))
+async def callback_make_req(client: Client, callback: CallbackQuery):
+    await callback.answer("Request Recorded!")
+    movie_name = callback.data.replace("make_req_", "")
+    await requests_col.insert_one({
+        "user_id": callback.from_user.id,
+        "name": callback.from_user.first_name or "",
+        "username": f"@{callback.from_user.username}" if callback.from_user.username else "",
+        "movie_name": movie_name,
+        "status": "pending",
+        "created_at": datetime.utcnow()
+    })
+    await callback.message.edit_text(f"✅ **චිත්‍රපට ඉල්ලීම සටහන් විය:** `{movie_name}`")
+
+@app.on_callback_query(filters.regex(r"^search_ad_"))
+async def callback_search_ad(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    msg_id = int(callback.data.split("_")[2])
+
+    await callback.answer()
+    step1_url = f"{BASE_URL}/gate/step1/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
+    step1_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔓 Open Sponsor Link 1 (Step 1)", url=step1_url)]
+    ])
+    await client.send_message(
+        chat_id=user_id,
+        text="🎬 **Download Verification (Step 1 of 2):**\n\nනොමිලේ චිත්‍රපටය ලබාගැනීමට පහත **'Open Sponsor Link 1'** ඔබන්න.",
+        reply_markup=step1_markup
+    )
+
+# =========================================================
+# VIP MANAGEMENT & STARS PAYMENT HANDLER
+# =========================================================
+def get_vip_selection_markup():
+    approx_star_lkr = int(VIP_STAR_PRICE * 6.8)
+    savings = max(0, approx_star_lkr - VIP_LKR_PRICE)
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"⭐ Pay with Telegram Stars ({VIP_STAR_PRICE} ⭐️ / ~Rs. {approx_star_lkr})", 
+            callback_data="pay_vip_stars"
+        )],
+        [InlineKeyboardButton(
+            f"🇱🇰 Bank Transfer - Rs. {VIP_LKR_PRICE} (Save Rs. {savings} 🔥)", 
+            callback_data="pay_vip_bank"
+        )]
+    ])
+
+@app.on_callback_query(filters.regex(r"^buy_vip_pass$"))
+async def vip_selection_callback(client: Client, callback: CallbackQuery):
+    await callback.answer()
+    text = (
+        "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n"
+        "✨ **VIP වරප්‍රසාද:**\n"
+        "• කිසිදු Ad එකක් නැත (100% No Ads Direct Files)\n"
+        "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n"
+        "• පැය 6ක Auto-Delete කාලයක් හිමිවීම\n\n"
+        "👇 **ඔබ ගෙවීම් කිරීමට බලාපොරොත්තු වන ක්‍රමය තෝරන්න:**"
+    )
+    await callback.message.reply_text(text, reply_markup=get_vip_selection_markup())
+
+@app.on_callback_query(filters.regex(r"^pay_vip_stars$"))
+async def pay_vip_stars_handler(client: Client, callback: CallbackQuery):
+    await callback.answer("⭐ Preparing Stars Invoice...")
+    ok, err = await send_stars_invoice(
+        chat_id=callback.from_user.id,
+        title="👑 Cinex LK VIP Pass (30 Days)",
+        description="Cinex LK VIP Channel ප්‍රවේශය (No Ads + Direct Files)",
+        payload="vip_sub",
+        stars=VIP_STAR_PRICE
+    )
+    if not ok:
+        await callback.message.reply_text(f"⚠️ Stars Invoice Error: `{err}`\n\n📌 *BotFather හි ඔබගේ Bot වෙත Payments enable කර ඇත්දැයි බලන්න.*")
+
+@app.on_callback_query(filters.regex(r"^buy_single_"))
+async def pay_single(client: Client, callback: CallbackQuery):
+    msg_id = callback.data.split("_")[2]
+    await callback.answer("⭐ Preparing Stars Invoice...")
+    ok, err = await send_stars_invoice(
+        chat_id=callback.from_user.id,
+        title="⚡ Direct Movie File (No Ads)",
+        description="දැන්වීම් නොමැතිව direct movie file එක ලබාගැනීමට.",
+        payload=f"single_{msg_id}",
+        stars=SINGLE_STAR_PRICE
+    )
+    if not ok:
+        await callback.message.reply_text(f"⚠️ Stars Invoice Error: `{err}`\n\n📌 *BotFather හි ඔබගේ Bot වෙත Payments enable කර ඇත්දැයි බලන්න.*")
+
+@app.on_callback_query(filters.regex(r"^pay_vip_bank$"))
+async def pay_vip_bank_handler(client: Client, callback: CallbackQuery):
+    user = callback.from_user
+    user_id = user.id
+    username = f"@{user.username}" if user.username else "No Username"
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    ref_code = f"CX-{random.randint(10000, 99999)}"
+
+    await manual_orders_col.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "username": username,
+            "name": full_name,
+            "ref_code": ref_code,
+            "amount": VIP_LKR_PRICE,
+            "status": "pending",
+            "created_at": datetime.utcnow()
+        }},
+        upsert=True
+    )
+
+    if ADMIN_USER_ID:
+        admin_alert = (
+            "🔔 **නව Bank Payment ඉල්ලීමක්!**\n\n"
+            f"👤 **පරිශීලකයා:** {full_name} ({username})\n"
+            f"🆔 **User ID:** `{user_id}`\n"
+            f"🔑 **Reference Code:** `{ref_code}`\n"
+            f"💰 **මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n"
+            f"📌 *User slip එක එවූ පසු VIP දීමට:*\n`/addvip {user_id}`"
+        )
+        try:
+            await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
+        except Exception:
+            pass
+
+    admin_link = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
+    text = (
+        "🇱🇰 **බැංකු තැන්පතු මඟින් VIP ලබාගැනීම:**\n\n"
+        f"💰 **ගෙවිය යුතු මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n"
+        f"{BANK_DETAILS}\n\n"
+        f"⚠️ **අනිවාර්යයි (Very Important):**\n"
+        f"මුදල් තැන්පත් කරන විට Reference/Remarks සඳහා පහත ඔබගේ Unique Code එක ඇතුළත් කරන්න:\n"
+        f"🔑 **ඔබගේ Reference Code එක:** `{ref_code}`\n\n"
+        f"📸 මුදල් ගෙවූ පසු Payment Slip හෝ Screenshot එක ඔබගේ User ID (`{user_id}`) සමඟ Admin වෙත එවන්න."
+    )
+    buttons = [[InlineKeyboardButton("📩 Send Slip to Admin", url=admin_link)]] if admin_link else []
+    await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+
+@app.on_message(filters.command("addvip") & filters.private)
+async def admin_add_vip_handler(client: Client, message: Message):
+    if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply_text("❌ **භාවිතය:** `/addvip <USER_ID>`")
+        return
+
+    try:
+        target_user_id = int(args[1].strip())
+    except ValueError:
+        await message.reply_text("❌ වැරදි User ID එකකි.")
+        return
+
+    expiry_date = datetime.utcnow() + timedelta(days=30)
+    await vip_users_col.update_one(
+        {"user_id": target_user_id},
+        {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+        upsert=True
+    )
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+        payload = {"chat_id": str(VIP_CHANNEL), "member_limit": 1}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    link = res["result"]["invite_link"]
+                    await client.send_message(
+                        chat_id=target_user_id,
+                        text=f"🎉 **ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}"
+                    )
+                    await message.reply_text(f"✅ User `{target_user_id}` VIP ලෙස සක්‍රිය කරන ලදී.")
+                    return
+        await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය. Bot ට Invite Link Rights ඇත්දැයි බලන්න.")
+    except Exception as e:
+        await message.reply_text(f"⚠️ Invite Error: {e}")
+
+# =========================================================
+# PAYMENT PRE-CHECKOUT & SUCCESS (RAW UPDATE BOT API HANDLERS)
+# =========================================================
+@app.on_raw_update()
+async def raw_update_handler(client: Client, update, users, chats):
+    if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
+        async with aiohttp.ClientSession() as session:
+            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
+
+payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
+
+@app.on_message(payment_filter)
+async def payment_success(client: Client, message: Message):
+    payload = message.successful_payment.invoice_payload
+
+    if payload.startswith("single_"):
+        msg_id = int(payload.split("_")[1])
+        await message.reply_text("🎉 **Stars ගෙවීම සාර්ථකයි!** මෙන්න ඔබගේ චිත්‍රපටය:")
+        await send_file_with_auto_delete(chat_id=message.chat.id, message_id=msg_id, is_vip=True)
+
+    elif payload == "vip_sub":
+        user_id = message.from_user.id
+        expiry_date = datetime.utcnow() + timedelta(days=30)
+        await vip_users_col.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+            upsert=True
+        )
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+            payload = {"chat_id": str(VIP_CHANNEL), "member_limit": 1}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as resp:
+                    res = await resp.json()
+                    if res.get("ok"):
+                        link = res["result"]["invite_link"]
+                        await message.reply_text(f"🎉 **VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}")
+        except Exception:
+            pass
+
+# =========================================================
+# SERVER RUNNER
+# =========================================================
+async def main():
+    global BOT_USERNAME
+    await app.start()
+    me = await app.get_me()
+    BOT_USERNAME = me.username
+    print(f"🤖 Bot Started Successfully as @{BOT_USERNAME}")
+
+    web_app = web.Application()
+    web_app.add_routes(routes)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"🌐 Cinex LK Engine Live on port {PORT}")
+
+    await idle()
+    await app.stop()
+
+if __name__ == "__main__":
+    app.run(main())
