@@ -371,7 +371,6 @@ async def create_storage_preview(client: Client, message: Message):
         me = await client.get_me()
         BOT_USERNAME = me.username
 
-    # Save initial metadata to Mongo
     await files_col.update_one(
         {"message_id": msg_id},
         {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
@@ -397,7 +396,6 @@ async def create_storage_preview(client: Client, message: Message):
 
     poster_url = meta.get("poster") if (meta.get("poster") and meta["poster"].startswith("http")) else DEFAULT_POSTER
 
-    # Preview Control Buttons (Inside Storage Channel)
     preview_markup = {
         "inline_keyboard": [
             [{"text": "📢 Post to Main Channel", "callback_data": f"post_main_{msg_id}"}],
@@ -405,7 +403,6 @@ async def create_storage_preview(client: Client, message: Message):
         ]
     }
 
-    # Send preview reply in storage channel
     res = await send_tg_photo_url(message.chat.id, poster_url, caption, preview_markup)
     if not res.get("ok"):
         await send_tg_message(message.chat.id, caption, preview_markup)
@@ -421,13 +418,13 @@ async def universal_message_handler(client: Client, message: Message):
 
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
     
-    # 1. STORAGE CHANNEL: Detect Uploads & Create Preview Post with Buttons
+    # 1. STORAGE CHANNEL UPLOADS
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
-    # 2. PRIVATE CHATS: Handlers for Users & Admin
+    # 2. PRIVATE CHATS
     if message.chat.type.value == "private":
         text = message.text or ""
         user_id = message.from_user.id if message.from_user else 0
@@ -533,12 +530,17 @@ async def universal_message_handler(client: Client, message: Message):
 # =========================================================
 @app.on_callback_query()
 async def global_callback_handler(client: Client, callback: CallbackQuery):
+    global BOT_USERNAME
     data = callback.data
     user_id = callback.from_user.id
-    await callback.answer()
+
+    if not BOT_USERNAME:
+        me = await client.get_me()
+        BOT_USERNAME = me.username
 
     # ACTION 1: POST TO MAIN CHANNEL (CLICKED INSIDE STORAGE)
     if data.startswith("post_main_"):
+        await callback.answer("⏳ Main Channel එකට Post කරමින් පවතී...")
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
         
@@ -554,6 +556,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         
         target = str(MAIN_CHANNEL).strip()
         sent = False
+        err_msg = ""
         
         if callback.message.photo:
             p = await client.download_media(callback.message.photo.file_id)
@@ -571,23 +574,31 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                                 res = await r.json()
                                 if res.get("ok"):
                                     sent = True
-                except Exception:
-                    pass
+                                else:
+                                    err_msg = res.get("description", "Photo Send Error")
+                except Exception as e:
+                    err_msg = str(e)
                 finally:
-                    os.remove(p)
+                    if os.path.exists(p):
+                        os.remove(p)
 
         if not sent:
             res = await send_tg_message(target, caption, main_markup)
-            sent = res.get("ok", False)
+            if res.get("ok"):
+                sent = True
+            else:
+                if not err_msg:
+                    err_msg = res.get("description", "Message Send Error")
 
         if sent:
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
         else:
-            await callback.answer("❌ Main Channel Post Error!", show_alert=True)
+            await callback.answer(f"❌ Main Fail: {err_msg[:100]}", show_alert=True)
         return
 
     # ACTION 2: POST TO VIP CHANNEL (CLICKED INSIDE STORAGE)
     if data.startswith("post_vip_"):
+        await callback.answer("⏳ VIP Channel එකට Post කරමින් පවතී...")
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
         
@@ -602,6 +613,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         
         target = str(VIP_CHANNEL).strip()
         sent = False
+        err_msg = ""
         
         if callback.message.photo:
             p = await client.download_media(callback.message.photo.file_id)
@@ -619,23 +631,31 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                                 res = await r.json()
                                 if res.get("ok"):
                                     sent = True
-                except Exception:
-                    pass
+                                else:
+                                    err_msg = res.get("description", "VIP Photo Send Error")
+                except Exception as e:
+                    err_msg = str(e)
                 finally:
-                    os.remove(p)
+                    if os.path.exists(p):
+                        os.remove(p)
 
         if not sent:
             res = await send_tg_message(target, vip_caption, vip_markup)
-            sent = res.get("ok", False)
+            if res.get("ok"):
+                sent = True
+            else:
+                if not err_msg:
+                    err_msg = res.get("description", "VIP Message Send Error")
 
         if sent:
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
         else:
-            await callback.answer("❌ VIP Channel Post Error!", show_alert=True)
+            await callback.answer(f"❌ VIP Fail: {err_msg[:100]}", show_alert=True)
         return
 
     # USER VERIFY CALLBACK
     if data.startswith("verify_"):
+        await callback.answer()
         param = data.replace("verify_", "")
         if await check_access(user_id):
             await callback.message.delete()
@@ -657,6 +677,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
     # VIP STARS CALLBACK
     if data == "pay_vip_stars":
+        await callback.answer()
         ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Access (No Ads)", "vip_sub", VIP_STAR_PRICE)
         if not ok:
             await callback.message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
@@ -664,6 +685,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
     # VIP BANK CALLBACK
     if data == "pay_vip_bank":
+        await callback.answer()
         ref = f"CX-{random.randint(10000, 99999)}"
         username = f"@{callback.from_user.username}" if callback.from_user.username else "No Username"
         full_name = f"{callback.from_user.first_name or ''} {callback.from_user.last_name or ''}".strip()
