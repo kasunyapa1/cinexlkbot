@@ -17,17 +17,6 @@ from pyrogram.types import (
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
-def parse_chat_target(val: str):
-    if not val:
-        return 0
-    val = str(val).strip()
-    if val.startswith("@"):
-        return val
-    try:
-        return int(val)
-    except ValueError:
-        return val
-
 # =========================================================
 # CONFIGURATIONS
 # =========================================================
@@ -36,13 +25,13 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "")
 
-STORAGE_CHANNEL = parse_chat_target(os.environ.get("STORAGE_CHANNEL", "-1004413765578"))
-VIP_CHANNEL = parse_chat_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
-MAIN_CHANNEL = parse_chat_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
-BACKUP_CHANNEL = parse_chat_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
+STORAGE_CHANNEL_RAW = os.environ.get("STORAGE_CHANNEL", "-1004413765578").strip()
+VIP_CHANNEL_RAW = os.environ.get("VIP_CHANNEL", "-1004387584375").strip()
+MAIN_CHANNEL_RAW = os.environ.get("MAIN_CHANNEL", "@cinexlk").strip()
+BACKUP_CHANNEL_RAW = os.environ.get("BACKUP_CHANNEL", "-1003901762623").strip()
 
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "").strip()
 
 VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "250"))
 VIP_LKR_PRICE = int(os.environ.get("VIP_LKR_PRICE", "1000"))
@@ -65,11 +54,11 @@ FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "360
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "21600"))
 
 app = Client(
-    "cinex_stable_engine",
+    "cinex_core",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=32
+    workers=16
 )
 
 db_client = AsyncIOMotorClient(MONGO_URI)
@@ -80,7 +69,6 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 
 awaiting_request = set()
-upload_queue = asyncio.Queue()
 
 # =========================================================
 # WEB SERVER & SAME-PAGE AD GATE
@@ -139,7 +127,7 @@ SAME_PAGE_GATE_HTML = """
 
 @routes.get("/")
 async def root_ping(request):
-    return web.Response(text="Cinex LK Bot Alive", status=200)
+    return web.Response(text="Cinex LK Bot Running", status=200)
 
 @routes.get("/gate/step1/{user_id}/{msg_id}")
 async def gate_step1(request):
@@ -158,11 +146,11 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# TELEGRAM HTTP ENGINE (DIRECT & FAIL-PROOF)
+# TELEGRAM HTTP ENGINE (STARS & CHANNEL SENDER)
 # =========================================================
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    data = {
+    body = {
         "chat_id": int(chat_id),
         "title": str(title),
         "description": str(description),
@@ -173,24 +161,24 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.post(url, data=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 res = await resp.json()
                 return res.get("ok", False), res.get("description", "")
     except Exception as e:
         return False, str(e)
 
-async def send_tg_photo(chat_id: str, photo_data, caption: str, reply_markup: dict):
+async def send_tg_photo_url(chat_id: str, photo_url: str, caption: str, reply_markup: dict):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    form = aiohttp.FormData()
-    form.add_field("chat_id", str(chat_id))
-    form.add_field("photo", photo_data, filename="poster.jpg")
-    form.add_field("caption", caption)
-    form.add_field("parse_mode", "Markdown")
-    form.add_field("reply_markup", json.dumps(reply_markup))
-
+    data = {
+        "chat_id": str(chat_id),
+        "photo": photo_url,
+        "caption": caption,
+        "parse_mode": "Markdown",
+        "reply_markup": json.dumps(reply_markup)
+    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 return await resp.json()
     except Exception as e:
         return {"ok": False, "description": str(e)}
@@ -234,7 +222,7 @@ async def deliver_movie_file(chat_id: int, message_id: int, is_vip: bool = False
     )
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-    payload = {"chat_id": int(chat_id), "from_chat_id": int(str(STORAGE_CHANNEL)), "message_id": int(message_id)}
+    payload = {"chat_id": int(chat_id), "from_chat_id": int(str(STORAGE_CHANNEL_RAW)), "message_id": int(message_id)}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as resp:
@@ -280,8 +268,8 @@ async def check_access(user_id: int) -> bool:
         rec = await bot_users_col.find_one({"user_id": user_id})
         if rec and rec.get("fsub_verified"):
             return True
-        in_main = await is_member(MAIN_CHANNEL, user_id)
-        in_back = await is_member(BACKUP_CHANNEL, user_id)
+        in_main = await is_member(MAIN_CHANNEL_RAW, user_id)
+        in_back = await is_member(BACKUP_CHANNEL_RAW, user_id)
         if in_main and in_back:
             await bot_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "fsub_verified": True}}, upsert=True)
             return True
@@ -291,15 +279,15 @@ async def check_access(user_id: int) -> bool:
 
 async def get_fsub_markup(param: str = "") -> InlineKeyboardMarkup:
     btns = []
-    if MAIN_CHANNEL:
-        btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}")])
-    if BACKUP_CHANNEL:
-        btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=f"https://t.me/{str(BACKUP_CHANNEL).replace('@', '')}")])
+    if MAIN_CHANNEL_RAW:
+        btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL_RAW).replace('@', '')}")])
+    if BACKUP_CHANNEL_RAW:
+        btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=f"https://t.me/{str(BACKUP_CHANNEL_RAW).replace('@', '')}")])
     btns.append([InlineKeyboardButton("🔄 Verify & Unlock", callback_data=f"verify_{param}" if param else "verify_root")])
     return InlineKeyboardMarkup(btns)
 
 # =========================================================
-# MOVIE METADATA & POSTER ENGINE
+# MOVIE METADATA CLEANER & FETCHER
 # =========================================================
 def clean_movie_title(raw_name: str):
     name = os.path.splitext(raw_name)[0]
@@ -335,112 +323,104 @@ async def fetch_metadata(raw_name: str):
         pass
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
-async def fetch_poster_bytes(url: str):
-    if not url or not url.startswith("http"):
-        return None
+# =========================================================
+# AUTO-POST FROM STORAGE TO MAIN CHANNEL
+# =========================================================
+async def dispatch_storage_to_main(client: Client, message: Message):
+    global BOT_USERNAME
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-    except Exception:
-        pass
-    return None
-
-# =========================================================
-# ASYNC WORKER: BULK UPLOADS SAFE QUEUE (NO DROPS EVER)
-# =========================================================
-async def upload_worker_loop():
-    while True:
-        task = await upload_queue.get()
-        try:
-            client, media, file_name, size_mb, msg_id = task
-            meta = await fetch_metadata(file_name)
-
-            await files_col.update_one(
-                {"message_id": msg_id},
-                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
-                upsert=True
-            )
-
-            rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
-            caption = (
-                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-                f"⭐ **IMDb Rating:** `{rating_str}`\n"
-                f"🎭 **Genres:** `{meta['genres']}`\n"
-                f"📦 **Size:** `{size_mb} MB`\n\n"
-                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
-            )
-
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
-                    [
-                        {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
-                        {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buystar_vip"}
-                    ]
-                ]
-            }
-
-            photo_data = None
-            if meta.get("poster"):
-                photo_data = await fetch_poster_bytes(meta["poster"])
-
-            if not photo_data and hasattr(media, "thumbs") and media.thumbs:
-                try:
-                    p = await client.download_media(media.thumbs[0].file_id)
-                    if p and os.path.exists(p):
-                        with open(p, "rb") as f:
-                            photo_data = f.read()
-                        os.remove(p)
-                except Exception:
-                    pass
-
-            # Post via HTTP (Safe for 64-bit and bulk flood)
-            target = str(MAIN_CHANNEL).strip()
-            if photo_data:
-                res = await send_tg_photo(target, photo_data, caption, markup)
-                if not res.get("ok"):
-                    await send_tg_message(target, caption, markup)
-            else:
-                await send_tg_message(target, caption, markup)
-
-            # 2.5 seconds safe pace between channel posts
-            await asyncio.sleep(2.5)
-
-        except Exception as e:
-            print(f"Queue Worker Error: {e}")
-        finally:
-            upload_queue.task_done()
-
-# =========================================================
-# STORAGE UPLOAD CATCHER (INSTANT ENQUEUE)
-# =========================================================
-@app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
-async def handle_storage_event(client: Client, message: Message):
-    try:
-        if not message.chat:
-            return
-        c_id = str(message.chat.id).replace("-100", "").replace("-", "")
-        s_id = str(STORAGE_CHANNEL).replace("-100", "").replace("-", "")
-        if c_id != s_id:
-            return
-
         media = message.document or message.video
         if not media:
             return
 
         file_name = media.file_name or "Unknown Movie"
         size_mb = round(media.file_size / (1024 * 1024), 2)
-        
-        # Enqueue immediately
-        await upload_queue.put((client, media, file_name, size_mb, message.id))
+        msg_id = message.id
+
+        if not BOT_USERNAME:
+            me = await client.get_me()
+            BOT_USERNAME = me.username
+
+        # Save to DB
+        await files_col.update_one(
+            {"message_id": msg_id},
+            {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
+            upsert=True
+        )
+
+        meta = await fetch_metadata(file_name)
+        rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
+        caption = (
+            f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+            f"⭐ **IMDb Rating:** `{rating_str}`\n"
+            f"🎭 **Genres:** `{meta['genres']}`\n"
+            f"📦 **Size:** `{size_mb} MB`\n\n"
+            f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+            "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+        )
+
+        markup = {
+            "inline_keyboard": [
+                [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
+                [
+                    {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
+                    {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buystar_vip"}
+                ]
+            ]
+        }
+
+        target = str(MAIN_CHANNEL_RAW).strip()
+        sent = False
+
+        # Try sending with Poster URL via Bot API
+        if meta.get("poster") and meta["poster"].startswith("http"):
+            res = await send_tg_photo_url(target, meta["poster"], caption, markup)
+            if res.get("ok"):
+                sent = True
+
+        # Fallback to Pyrogram send_photo using video thumbnail if available
+        if not sent and hasattr(media, "thumbs") and media.thumbs:
+            try:
+                t = await client.download_media(media.thumbs[0].file_id)
+                if t and os.path.exists(t):
+                    await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
+                        [
+                            InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+                            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buystar_vip")
+                        ]
+                    ]))
+                    os.remove(t)
+                    sent = True
+            except Exception:
+                pass
+
+        # Final fallback: text message (100% delivered)
+        if not sent:
+            await send_tg_message(target, caption, markup)
+
+        print(f"✅ Successfully auto-posted '{file_name}' to Main Channel")
+
     except Exception as e:
-        print(f"Storage Event Error: {e}")
+        print(f"❌ Error dispatching to main: {e}")
+
+@app.on_message((filters.document | filters.video) & (filters.channel | filters.group))
+async def on_channel_upload(client: Client, message: Message):
+    if not message.chat:
+        return
+    
+    # Clean check: match chat ID against STORAGE_CHANNEL_RAW
+    chat_str = str(message.chat.id)
+    storage_str = str(STORAGE_CHANNEL_RAW)
+    
+    clean_chat = chat_str.replace("-100", "").replace("-", "")
+    clean_storage = storage_str.replace("-100", "").replace("-", "")
+
+    if clean_chat == clean_storage or chat_str == storage_str:
+        asyncio.create_task(dispatch_storage_to_main(client, message))
 
 # =========================================================
-# FORWARD MAIN TO VIP CHANNEL HANDLER
+# FORWARD MAIN POST TO VIP CHANNEL HANDLER
 # =========================================================
 @app.on_message(filters.private & filters.forwarded)
 async def handle_forward_to_vip(client: Client, message: Message):
@@ -482,21 +462,38 @@ async def handle_forward_to_vip(client: Client, message: Message):
 
     status = await message.reply_text("⏳ VIP Channel එකට Auto-Post කරමින් පවතී...")
 
-    photo_data = None
+    sent = False
+    target_vip = str(VIP_CHANNEL_RAW).strip()
+
     if message.photo:
         p = await client.download_media(message.photo.file_id)
         if p and os.path.exists(p):
-            with open(p, "rb") as f:
-                photo_data = f.read()
-            os.remove(p)
+            try:
+                with open(p, "rb") as f:
+                    form = aiohttp.FormData()
+                    form.add_field("chat_id", target_vip)
+                    form.add_field("photo", f.read(), filename="poster.jpg")
+                    form.add_field("caption", vip_caption)
+                    form.add_field("parse_mode", "Markdown")
+                    form.add_field("reply_markup", json.dumps(vip_markup))
+                    async with aiohttp.ClientSession() as s:
+                        async with s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=form) as r:
+                            res = await r.json()
+                            if res.get("ok"):
+                                sent = True
+            except Exception:
+                pass
+            finally:
+                os.remove(p)
 
-    target_vip = str(VIP_CHANNEL).strip()
-    res = await send_tg_photo(target_vip, photo_data, vip_caption, vip_markup) if photo_data else await send_tg_message(target_vip, vip_caption, vip_markup)
+    if not sent:
+        res = await send_tg_message(target_vip, vip_caption, vip_markup)
+        sent = res.get("ok", False)
 
-    if res.get("ok"):
+    if sent:
         await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
     else:
-        await status.edit_text(f"❌ VIP Error: `{res.get('description')}`")
+        await status.edit_text(f"❌ VIP Post Error!")
 
 # =========================================================
 # START COMMAND (INSTANT PARAMETER DISPATCH)
@@ -612,7 +609,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         return
 
 # =========================================================
-# PAYMENT SUCCESS (TELEGRAM STARS RAW ENGINE)
+# PAYMENT PRECHECKOUT & SUCCESS
 # =========================================================
 @app.on_raw_update()
 async def handle_precheckout(client: Client, update, users, chats):
@@ -638,24 +635,21 @@ async def handle_payment_success(client: Client, message: Message):
         await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry}}, upsert=True)
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json={"chat_id": str(VIP_CHANNEL), "member_limit": 1}) as resp:
+            async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
                 res = await resp.json()
                 if res.get("ok"):
                     link = res["result"]["invite_link"]
                     await message.reply_text(f"🎉 **VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}")
 
 # =========================================================
-# SERVER INIT & RUNNER
+# SERVER RUNNER
 # =========================================================
 async def main():
     global BOT_USERNAME
     await app.start()
     me = await app.get_me()
     BOT_USERNAME = me.username
-    print(f"🤖 Bot Started Successfully as @{BOT_USERNAME}")
-
-    # Start independent non-blocking queue loop
-    asyncio.create_task(upload_worker_loop())
+    print(f"🤖 Bot Started as @{BOT_USERNAME}")
 
     web_app = web.Application()
     web_app.add_routes(routes)
@@ -663,7 +657,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Cinex LK Engine Live on port {PORT}")
+    print(f"🌐 Web Server Live on port {PORT}")
 
     await idle()
     await app.stop()
