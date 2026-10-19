@@ -17,6 +17,17 @@ from pyrogram.types import (
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
+def parse_target(val: str):
+    if not val:
+        return 0
+    val = str(val).strip()
+    if val.startswith("@"):
+        return val
+    try:
+        return int(val)
+    except ValueError:
+        return val
+
 # =========================================================
 # CONFIGURATIONS
 # =========================================================
@@ -25,10 +36,10 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "")
 
-STORAGE_CHANNEL_RAW = os.environ.get("STORAGE_CHANNEL", "-1004413765578").strip()
-VIP_CHANNEL_RAW = os.environ.get("VIP_CHANNEL", "-1004387584375").strip()
-MAIN_CHANNEL_RAW = os.environ.get("MAIN_CHANNEL", "@cinexlk").strip()
-BACKUP_CHANNEL_RAW = os.environ.get("BACKUP_CHANNEL", "-1003901762623").strip()
+STORAGE_CHANNEL = parse_target(os.environ.get("STORAGE_CHANNEL", "-1004413765578"))
+VIP_CHANNEL = parse_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
+MAIN_CHANNEL = parse_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
+BACKUP_CHANNEL = parse_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
 
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "").strip()
@@ -54,7 +65,7 @@ FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "360
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "21600"))
 
 app = Client(
-    "cinex_core",
+    "cinex_stable_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
@@ -69,12 +80,10 @@ manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 
 awaiting_request = set()
-STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
-
 channel_post_lock = asyncio.Lock()
 
 # =========================================================
-# WEB SERVER & SAME-PAGE AD GATE
+# WEB SERVER & AD GATE
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -108,9 +117,7 @@ SAME_PAGE_GATE_HTML = """
             <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
         </div>
     </div>
-    
     <iframe id="ad-frame" src="{ad_url}" sandbox="allow-forms allow-scripts allow-same-origin allow-popups"></iframe>
-
     <script>
         let sec = 8;
         const timer = setInterval(() => {{
@@ -130,7 +137,7 @@ SAME_PAGE_GATE_HTML = """
 
 @routes.get("/")
 async def root_ping(request):
-    return web.Response(text="Cinex LK Bot Running", status=200)
+    return web.Response(text="Cinex LK Bot Alive", status=200)
 
 @routes.get("/gate/step1/{user_id}/{msg_id}")
 async def gate_step1(request):
@@ -149,7 +156,7 @@ async def gate_step2(request):
     return web.Response(text=html, content_type='text/html')
 
 # =========================================================
-# TELEGRAM HTTP ENGINE (STARS & MESSAGES)
+# TELEGRAM HTTP ENGINES
 # =========================================================
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -225,7 +232,7 @@ async def deliver_movie_file(chat_id: int, message_id: int, is_vip: bool = False
     )
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-    payload = {"chat_id": int(chat_id), "from_chat_id": int(str(STORAGE_CHANNEL_RAW)), "message_id": int(message_id)}
+    payload = {"chat_id": int(chat_id), "from_chat_id": str(STORAGE_CHANNEL), "message_id": int(message_id)}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as resp:
@@ -271,8 +278,8 @@ async def check_access(user_id: int) -> bool:
         rec = await bot_users_col.find_one({"user_id": user_id})
         if rec and rec.get("fsub_verified"):
             return True
-        in_main = await is_member(MAIN_CHANNEL_RAW, user_id)
-        in_back = await is_member(BACKUP_CHANNEL_RAW, user_id)
+        in_main = await is_member(MAIN_CHANNEL, user_id)
+        in_back = await is_member(BACKUP_CHANNEL, user_id)
         if in_main and in_back:
             await bot_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "fsub_verified": True}}, upsert=True)
             return True
@@ -282,10 +289,10 @@ async def check_access(user_id: int) -> bool:
 
 async def get_fsub_markup(param: str = "") -> InlineKeyboardMarkup:
     btns = []
-    if MAIN_CHANNEL_RAW:
-        btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL_RAW).replace('@', '')}")])
-    if BACKUP_CHANNEL_RAW:
-        btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=f"https://t.me/{str(BACKUP_CHANNEL_RAW).replace('@', '')}")])
+    if MAIN_CHANNEL:
+        btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}")])
+    if BACKUP_CHANNEL:
+        btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=f"https://t.me/{str(BACKUP_CHANNEL).replace('@', '')}")])
     btns.append([InlineKeyboardButton("🔄 Verify & Unlock", callback_data=f"verify_{param}" if param else "verify_root")])
     return InlineKeyboardMarkup(btns)
 
@@ -345,7 +352,93 @@ async def fetch_metadata(raw_name: str):
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
-# PRIORITY 1: START COMMAND (PRIVATE MESSAGES ONLY)
+# STORAGE TO MAIN DISPATCH WORKER
+# =========================================================
+async def dispatch_storage_to_main(client: Client, message: Message):
+    global BOT_USERNAME
+    async with channel_post_lock:
+        try:
+            media = message.document or message.video
+            if not media:
+                return
+
+            file_name = media.file_name or "Unknown Movie"
+            size_mb = round(media.file_size / (1024 * 1024), 2)
+            msg_id = message.id
+
+            if not BOT_USERNAME:
+                me = await client.get_me()
+                BOT_USERNAME = me.username
+
+            await files_col.update_one(
+                {"message_id": msg_id},
+                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
+                upsert=True
+            )
+
+            meta = await fetch_metadata(file_name)
+            rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
+            caption = (
+                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
+                f"⭐ **IMDb Rating:** `{rating_str}`\n"
+                f"🎭 **Genres:** `{meta['genres']}`\n"
+                f"📦 **Size:** `{size_mb} MB`\n\n"
+                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
+                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+            )
+
+            markup = {
+                "inline_keyboard": [
+                    [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
+                    [
+                        {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
+                        {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
+                    ]
+                ]
+            }
+
+            target = str(MAIN_CHANNEL).strip()
+            sent = False
+
+            if meta.get("poster") and meta["poster"].startswith("http"):
+                res = await send_tg_photo_url(target, meta["poster"], caption, markup)
+                if res.get("ok"):
+                    sent = True
+
+            if not sent and hasattr(media, "thumbs") and media.thumbs:
+                try:
+                    t = await client.download_media(media.thumbs[0].file_id)
+                    if t and os.path.exists(t):
+                        await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
+                            [
+                                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
+                                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
+                            ]
+                        ]))
+                        os.remove(t)
+                        sent = True
+                except Exception:
+                    pass
+
+            if not sent:
+                await send_tg_message(target, caption, markup)
+
+            print(f"✅ Auto-posted '{file_name}' to Main Channel")
+            await asyncio.sleep(2.5)
+
+        except Exception as e:
+            print(f"❌ Error dispatching to main: {e}")
+
+# =========================================================
+# HANDLER 1: STORAGE CHANNEL POSTS ONLY
+# =========================================================
+@app.on_message(filters.chat([STORAGE_CHANNEL]) & (filters.document | filters.video))
+async def on_channel_upload(client: Client, message: Message):
+    asyncio.create_task(dispatch_storage_to_main(client, message))
+
+# =========================================================
+# HANDLER 2: PRIVATE COMMANDS ONLY (/start)
 # =========================================================
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start_cmd(client: Client, message: Message):
@@ -353,19 +446,16 @@ async def handle_start_cmd(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     param = parts[1].strip() if len(parts) > 1 else ""
 
-    # 1. VIP MENU (BUY VIP PASS CLICKED OR /start vip)
     if param in ["buyvip", "vip", "buystar_vip"]:
         await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
         return
 
-    # 2. VIP DIRECT FILE
     if param.startswith("vipfile_"):
         mid = int(param.split("_")[1])
         await message.reply_text("👑 **VIP Direct File:**")
         await deliver_movie_file(user_id, mid, is_vip=True)
         return
 
-    # 3. TOKEN 1 VERIFIED
     if param.startswith("tok1_"):
         mid = param.split("_")[2]
         step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
@@ -375,14 +465,12 @@ async def handle_start_cmd(client: Client, message: Message):
         )
         return
 
-    # 4. TOKEN 2 VERIFIED
     if param.startswith("tok2_"):
         mid = int(param.split("_")[2])
         await message.reply_text("🎉 **සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:**")
         await deliver_movie_file(user_id, mid, is_vip=False)
         return
 
-    # 5. SINGLE MOVIE STARS BUY
     if param.startswith("buy_"):
         mid = param.split("_")[1]
         ok, err = await send_tg_invoice(user_id, "⚡ Direct Movie File", "දැන්වීම් නොමැතිව direct Telegram file එක ලබාගැනීමට.", f"single_{mid}", SINGLE_STAR_PRICE)
@@ -390,12 +478,10 @@ async def handle_start_cmd(client: Client, message: Message):
             await message.reply_text(f"⚠️ Stars Error: `{err}`")
         return
 
-    # 6. FORCE SUB CHECK
     if not await check_access(user_id):
         await message.reply_text("🔒 **චිත්‍රපට ලබාගැනීමට පෙර අපගේ Channels වලට Join වන්න:**", reply_markup=await get_fsub_markup(param))
         return
 
-    # 7. MAIN CHANNEL FREE ADS INITIATOR
     if param.startswith("adstep1_"):
         mid = param.split("_")[1]
         step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
@@ -405,7 +491,6 @@ async def handle_start_cmd(client: Client, message: Message):
         )
         return
 
-    # 8. DEFAULT WELCOME (ONLY IF NO PARAMETER)
     await message.reply_text(
         "👋 **සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!**\n\n"
         "🔍 Movie එකේ නම එවන්න.\n"
@@ -414,7 +499,7 @@ async def handle_start_cmd(client: Client, message: Message):
     )
 
 # =========================================================
-# PRIORITY 2: CALLBACK HANDLERS
+# HANDLER 3: CALLBACK QUERIES
 # =========================================================
 @app.on_callback_query()
 async def global_callback_handler(client: Client, callback: CallbackQuery):
@@ -442,14 +527,12 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී Verify ඔබන්න.", show_alert=True)
         return
 
-    # Pay VIP with Stars Callback
     if data == "pay_vip_stars":
         ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Access (No Ads)", "vip_sub", VIP_STAR_PRICE)
         if not ok:
             await callback.message.reply_text(f"⚠️ Stars Invoice Error: `{err}`")
         return
 
-    # Pay VIP with Bank Transfer Callback
     if data == "pay_vip_bank":
         ref = f"CX-{random.randint(10000, 99999)}"
         username = f"@{callback.from_user.username}" if callback.from_user.username else "No Username"
@@ -498,7 +581,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         return
 
 # =========================================================
-# PRIORITY 3: FORWARD MAIN POST TO VIP CHANNEL HANDLER
+# HANDLER 4: FORWARD POST TO VIP CHANNEL
 # =========================================================
 @app.on_message(filters.private & filters.forwarded)
 async def handle_forward_to_vip(client: Client, message: Message):
@@ -539,9 +622,8 @@ async def handle_forward_to_vip(client: Client, message: Message):
     vip_markup = {"inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{BOT_USERNAME}?start=vipfile_{target_msg_id}"}]]}
 
     status = await message.reply_text("⏳ VIP Channel එකට Auto-Post කරමින් පවතී...")
-
     sent = False
-    target_vip = str(VIP_CHANNEL_RAW).strip()
+    target_vip = str(VIP_CHANNEL).strip()
 
     if message.photo:
         p = await client.download_media(message.photo.file_id)
@@ -574,101 +656,7 @@ async def handle_forward_to_vip(client: Client, message: Message):
         await status.edit_text(f"❌ VIP Post Error!")
 
 # =========================================================
-# PRIORITY 4: AUTO-POST FROM STORAGE TO MAIN CHANNEL
-# =========================================================
-async def dispatch_storage_to_main(client: Client, message: Message):
-    global BOT_USERNAME
-    async with channel_post_lock:
-        try:
-            media = message.document or message.video
-            if not media:
-                return
-
-            file_name = media.file_name or "Unknown Movie"
-            size_mb = round(media.file_size / (1024 * 1024), 2)
-            msg_id = message.id
-
-            if not BOT_USERNAME:
-                me = await client.get_me()
-                BOT_USERNAME = me.username
-
-            # Save to DB
-            await files_col.update_one(
-                {"message_id": msg_id},
-                {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
-                upsert=True
-            )
-
-            meta = await fetch_metadata(file_name)
-            rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
-            caption = (
-                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-                f"⭐ **IMDb Rating:** `{rating_str}`\n"
-                f"🎭 **Genres:** `{meta['genres']}`\n"
-                f"📦 **Size:** `{size_mb} MB`\n\n"
-                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
-            )
-
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
-                    [
-                        {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
-                        {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}
-                    ]
-                ]
-            }
-
-            target = str(MAIN_CHANNEL_RAW).strip()
-            sent = False
-
-            # Primary: Send HD Poster URL
-            if meta.get("poster") and meta["poster"].startswith("http"):
-                res = await send_tg_photo_url(target, meta["poster"], caption, markup)
-                if res.get("ok"):
-                    sent = True
-
-            # Secondary Fallback: Video Thumbnail
-            if not sent and hasattr(media, "thumbs") and media.thumbs:
-                try:
-                    t = await client.download_media(media.thumbs[0].file_id)
-                    if t and os.path.exists(t):
-                        await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
-                            [
-                                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
-                            ]
-                        ]))
-                        os.remove(t)
-                        sent = True
-                except Exception:
-                    pass
-
-            # Final Fallback: Text only
-            if not sent:
-                await send_tg_message(target, caption, markup)
-
-            print(f"✅ Auto-posted '{file_name}' to Main Channel")
-            await asyncio.sleep(2.5)
-
-        except Exception as e:
-            print(f"❌ Error dispatching to main: {e}")
-
-# Catch only channel uploads from Storage (Does NOT affect private user messages)
-@app.on_message(filters.chat([int(STORAGE_CHANNEL_RAW) if STORAGE_CHANNEL_RAW.lstrip("-").isdigit() else STORAGE_CHANNEL_RAW]) | (filters.channel & ~filters.private))
-async def on_channel_upload(client: Client, message: Message):
-    if not message.chat:
-        return
-
-    chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
-    if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
-        if message.document or message.video:
-            asyncio.create_task(dispatch_storage_to_main(client, message))
-
-# =========================================================
-# ADMIN /addvip COMMAND
+# HANDLER 5: ADMIN /addvip COMMAND
 # =========================================================
 @app.on_message(filters.command("addvip") & filters.private)
 async def admin_add_vip_handler(client: Client, message: Message):
@@ -694,7 +682,7 @@ async def admin_add_vip_handler(client: Client, message: Message):
     )
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-        payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
+        payload = {"chat_id": str(VIP_CHANNEL), "member_limit": 1}
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as resp:
                 res = await resp.json()
@@ -711,7 +699,7 @@ async def admin_add_vip_handler(client: Client, message: Message):
         await message.reply_text(f"⚠️ Invite Error: {e}")
 
 # =========================================================
-# PAYMENT PRECHECKOUT & SUCCESS
+# HANDLER 6: TELEGRAM STARS RAW PRECHECKOUT & SUCCESS
 # =========================================================
 @app.on_raw_update()
 async def handle_precheckout(client: Client, update, users, chats):
@@ -737,7 +725,7 @@ async def handle_payment_success(client: Client, message: Message):
         await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry}}, upsert=True)
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
+            async with session.post(url, json={"chat_id": str(VIP_CHANNEL), "member_limit": 1}) as resp:
                 res = await resp.json()
                 if res.get("ok"):
                     link = res["result"]["invite_link"]
