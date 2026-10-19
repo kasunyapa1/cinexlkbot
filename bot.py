@@ -1,6 +1,6 @@
 import os
 import re
-import io
+import html
 import json
 import random
 import asyncio
@@ -48,12 +48,14 @@ VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "250"))
 VIP_LKR_PRICE = int(os.environ.get("VIP_LKR_PRICE", "1000"))
 SINGLE_STAR_PRICE = int(os.environ.get("SINGLE_STAR_PRICE", "5"))
 
+DEFAULT_POSTER = "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?q=80&w=1000&auto=format&fit=crop"
+
 BANK_DETAILS = os.environ.get(
     "BANK_DETAILS",
-    "🏦 **Bank:** Commercial Bank\n"
-    "👤 **Name:** Cinex LK Admin\n"
-    "💳 **Account No:** 8001234567\n"
-    "🏢 **Branch:** Colombo"
+    "🏦 <b>Bank:</b> Commercial Bank\n"
+    "👤 <b>Name:</b> Cinex LK Admin\n"
+    "💳 <b>Account No:</b> 8001234567\n"
+    "🏢 <b>Branch:</b> Colombo"
 )
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "").strip()
@@ -79,7 +81,6 @@ bot_users_col = db_client["MovieDB"]["bot_users"]
 manual_orders_col = db_client["MovieDB"]["manual_orders"]
 requests_col = db_client["MovieDB"]["movie_requests"]
 
-awaiting_request = set()
 channel_post_lock = asyncio.Lock()
 
 # =========================================================
@@ -144,19 +145,19 @@ async def gate_step1(request):
     user_id = request.match_info['user_id']
     msg_id = request.match_info['msg_id']
     token = f"tok1_{user_id}_{msg_id}"
-    html = SAME_PAGE_GATE_HTML.format(step="1", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
-    return web.Response(text=html, content_type='text/html')
+    html_page = SAME_PAGE_GATE_HTML.format(step="1", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
+    return web.Response(text=html_page, content_type='text/html')
 
 @routes.get("/gate/step2/{user_id}/{msg_id}")
 async def gate_step2(request):
     user_id = request.match_info['user_id']
     msg_id = request.match_info['msg_id']
     token = f"tok2_{user_id}_{msg_id}"
-    html = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
-    return web.Response(text=html, content_type='text/html')
+    html_page = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
+    return web.Response(text=html_page, content_type='text/html')
 
 # =========================================================
-# TELEGRAM HTTP ENGINES
+# TELEGRAM HTTP ENGINES (HTML SAFE)
 # =========================================================
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -177,25 +178,26 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
     except Exception as e:
         return False, str(e)
 
-async def send_tg_photo_url(chat_id: str, photo_url: str, caption: str, reply_markup: dict):
+async def send_tg_photo_url(chat_id: str, photo_url: str, caption_html: str, reply_markup: dict):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     data = {
         "chat_id": str(chat_id),
         "photo": photo_url,
-        "caption": caption,
-        "parse_mode": "Markdown",
+        "caption": caption_html,
+        "parse_mode": "HTML",
         "reply_markup": json.dumps(reply_markup)
     }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                return await resp.json()
+                res = await resp.json()
+                return res
     except Exception as e:
         return {"ok": False, "description": str(e)}
 
-async def send_tg_message(chat_id: str, text: str, reply_markup: dict = None):
+async def send_tg_message(chat_id: str, text_html: str, reply_markup: dict = None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": str(chat_id), "text": text, "parse_mode": "Markdown"}
+    payload = {"chat_id": str(chat_id), "text": text_html, "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
@@ -212,7 +214,7 @@ async def auto_delete_task(chat_id: int, msg_ids: list, delay: int):
     await asyncio.sleep(delay)
     try:
         await app.delete_messages(chat_id=chat_id, message_ids=msg_ids)
-        await app.send_message(chat_id=chat_id, text="🗑️ **ප්‍රකාශන හිමිකම් ආරක්ෂාව මත චිත්‍රපටය Chat එකෙන් ඉවත් කරන ලදී.**")
+        await app.send_message(chat_id=chat_id, text="🗑️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත චිත්‍රපටය Chat එකෙන් ඉවත් කරන ලදී.</b>", parse_mode=None)
     except Exception:
         pass
 
@@ -226,9 +228,9 @@ async def deliver_movie_file(chat_id: int, message_id: int, is_vip: bool = False
         pass
 
     warn_text = (
-        "⚡ **Auto-Download Started:**\n\n"
-        f"⚠️ මෙම චිත්‍රපටය තවත් **{time_label}කින්** Chat එකෙන් ඉවත් වේ.\n"
-        "📥 Device එකට Save කරගැනීමට වීඩියෝවේ Menu එකෙන් **'Save to Downloads'** දෙන්න."
+        "⚡ <b>Auto-Download Started:</b>\n\n"
+        f"⚠️ මෙම චිත්‍රපටය තවත් <b>{time_label}කින්</b> Chat එකෙන් ඉවත් වේ.\n"
+        "📥 Device එකට Save කරගැනීමට වීඩියෝවේ Menu එකෙන් <b>'Save to Downloads'</b> දෙන්න."
     )
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
@@ -245,7 +247,7 @@ async def deliver_movie_file(chat_id: int, message_id: int, is_vip: bool = False
     except Exception:
         pass
 
-    await app.send_message(chat_id=chat_id, text="❌ **මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.**")
+    await app.send_message(chat_id=chat_id, text="❌ <b>මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.</b>")
     return False
 
 # =========================================================
@@ -305,29 +307,36 @@ def get_vip_options_markup():
     ])
 
 VIP_DETAILS_TEXT = (
-    "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n"
-    "✨ **VIP සාමාජිකත්වයේ වාසි:**\n"
+    "👑 <b>Cinex LK VIP Pass (Monthly - 30 Days)</b>\n\n"
+    "✨ <b>VIP සාමාජිකත්වයේ වාසි:</b>\n"
     "• කිසිදු දැන්වීමක් නොමැත (100% No Ads Direct Files)\n"
     "• Direct Files ක්ෂණිකව ලබාගත හැක\n"
     "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n"
     "• පැය 6ක Auto-Delete කාලයක් හිමිවීම\n\n"
-    "👇 **ගෙවීම් කිරීමට කැමති ආකාරය තෝරන්න:**"
+    "👇 <b>ගෙවීම් කිරීමට කැමති ආකාරය තෝරන්න:</b>"
 )
 
 # =========================================================
-# MOVIE METADATA CLEANER & FETCHER
+# PERFECT MOVIE CLEANER & OMDB MATCHER
 # =========================================================
 def clean_movie_title(raw_name: str):
     name = os.path.splitext(raw_name)[0]
-    name = re.sub(r"[\._\-\[\]\(\)]+", " ", name)
+    
+    # 1. Year extract
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", name)
     year = year_match.group(1) if year_match else None
-
-    cleaned = re.split(r"\b(1080p|720p|480p|2160p|4k|hdr|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|aac|esub|cinexlk|hindi|tamil|sinhala)\b", name, flags=re.IGNORECASE)[0]
+    
+    # 2. Year eka nathuwa ithuru tika clean karanna
     if year:
-        cleaned = cleaned.replace(year, "")
-    cleaned = " ".join(cleaned.split()).strip()
-    return cleaned if cleaned else raw_name, year
+        name = name.replace(year, " ")
+
+    # 3. Quality tags, brackets, dashes remove
+    name = re.sub(r"[\[\(\{].*?[\]\)\}]", " ", name)
+    name = re.split(r"\b(1080p|720p|480p|2160p|4k|hdr|bluray|web-dl|webrip|brrip|dvdrip|x264|x265|hevc|aac|esub|cinexlk|hindi|tamil|sinhala|telugu|malayalam)\b", name, flags=re.IGNORECASE)[0]
+    name = re.sub(r"[\._\-\+]+", " ", name)
+    
+    cleaned = " ".join(name.split()).strip()
+    return cleaned if cleaned else raw_name.strip(), year
 
 async def fetch_metadata(raw_name: str):
     title, year = clean_movie_title(raw_name)
@@ -349,6 +358,8 @@ async def fetch_metadata(raw_name: str):
                         }
     except Exception:
         pass
+    
+    # Fallback to local clean name if OMDb fails
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
@@ -362,7 +373,7 @@ async def dispatch_storage_to_main(client: Client, message: Message):
             if not media:
                 return
 
-            file_name = media.file_name or "Unknown Movie"
+            file_name = getattr(media, "file_name", None) or message.caption or "Movie"
             size_mb = round(media.file_size / (1024 * 1024), 2)
             msg_id = message.id
 
@@ -378,13 +389,19 @@ async def dispatch_storage_to_main(client: Client, message: Message):
 
             meta = await fetch_metadata(file_name)
             rating_str = f"{meta['rating']} / 10" if meta['rating'] != "N/A" else "N/A"
+
+            safe_title = html.escape(str(meta['title']))
+            safe_year = html.escape(str(meta['year']))
+            safe_genres = html.escape(str(meta['genres']))
+            safe_plot = html.escape(str(meta['plot'])[:250])
+
             caption = (
-                f"🎬 **{meta['title']} ({meta['year']})**\n\n"
-                f"⭐ **IMDb Rating:** `{rating_str}`\n"
-                f"🎭 **Genres:** `{meta['genres']}`\n"
-                f"📦 **Size:** `{size_mb} MB`\n\n"
-                f"📖 **Plot:** {meta['plot'][:250]}...\n\n"
-                "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
+                f"🎬 <b>{safe_title} ({safe_year})</b>\n\n"
+                f"⭐ <b>IMDb Rating:</b> <code>{rating_str}</code>\n"
+                f"🎭 <b>Genres:</b> <code>{safe_genres}</code>\n"
+                f"📦 <b>Size:</b> <code>{size_mb} MB</code>\n\n"
+                f"📖 <b>Plot:</b> {safe_plot}...\n\n"
+                "👇 <b>චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:</b>"
             )
 
             markup = {
@@ -398,33 +415,16 @@ async def dispatch_storage_to_main(client: Client, message: Message):
             }
 
             target = str(MAIN_CHANNEL).strip()
-            sent = False
+            poster_url = meta.get("poster") if (meta.get("poster") and meta["poster"].startswith("http")) else DEFAULT_POSTER
 
-            if meta.get("poster") and meta["poster"].startswith("http"):
-                res = await send_tg_photo_url(target, meta["poster"], caption, markup)
-                if res.get("ok"):
-                    sent = True
-
-            if not sent and hasattr(media, "thumbs") and media.thumbs:
-                try:
-                    t = await client.download_media(media.thumbs[0].file_id)
-                    if t and os.path.exists(t):
-                        await client.send_photo(chat_id=target, photo=t, caption=caption, reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
-                            [
-                                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
-                            ]
-                        ]))
-                        os.remove(t)
-                        sent = True
-                except Exception:
-                    pass
-
-            if not sent:
+            # 1. Send with Poster
+            res = await send_tg_photo_url(target, poster_url, caption, markup)
+            
+            # 2. Safe Fallback to text message if photo fails
+            if not res.get("ok"):
                 await send_tg_message(target, caption, markup)
 
-            print(f"✅ Auto-posted '{file_name}' to Main Channel")
+            print(f"✅ Auto-posted '{file_name}' ({size_mb} MB) to Main Channel")
             await asyncio.sleep(2.5)
 
         except Exception as e:
@@ -452,7 +452,7 @@ async def handle_start_cmd(client: Client, message: Message):
 
     if param.startswith("vipfile_"):
         mid = int(param.split("_")[1])
-        await message.reply_text("👑 **VIP Direct File:**")
+        await message.reply_text("👑 <b>VIP Direct File:</b>")
         await deliver_movie_file(user_id, mid, is_vip=True)
         return
 
@@ -460,14 +460,14 @@ async def handle_start_cmd(client: Client, message: Message):
         mid = param.split("_")[2]
         step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
         await message.reply_text(
-            "🎉 **Step 1 සාර්ථකයි!**\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
+            "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
         )
         return
 
     if param.startswith("tok2_"):
         mid = int(param.split("_")[2])
-        await message.reply_text("🎉 **සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:**")
+        await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:</b>")
         await deliver_movie_file(user_id, mid, is_vip=False)
         return
 
@@ -475,27 +475,27 @@ async def handle_start_cmd(client: Client, message: Message):
         mid = param.split("_")[1]
         ok, err = await send_tg_invoice(user_id, "⚡ Direct Movie File", "දැන්වීම් නොමැතිව direct Telegram file එක ලබාගැනීමට.", f"single_{mid}", SINGLE_STAR_PRICE)
         if not ok:
-            await message.reply_text(f"⚠️ Stars Error: `{err}`")
+            await message.reply_text(f"⚠️ Stars Error: <code>{err}</code>")
         return
 
     if not await check_access(user_id):
-        await message.reply_text("🔒 **චිත්‍රපට ලබාගැනීමට පෙර අපගේ Channels වලට Join වන්න:**", reply_markup=await get_fsub_markup(param))
+        await message.reply_text("🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර අපගේ Channels වලට Join වන්න:</b>", reply_markup=await get_fsub_markup(param))
         return
 
     if param.startswith("adstep1_"):
         mid = param.split("_")[1]
         step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
         await message.reply_text(
-            "🎬 **Download Verification (Step 1 of 2):**\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
+            "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
         )
         return
 
     await message.reply_text(
-        "👋 **සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!**\n\n"
+        "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
         "🔍 Movie එකේ නම එවන්න.\n"
-        "📚 චිත්‍රපට නාමාවලිය: `/movielist`\n"
-        "👑 VIP සාමාජිකත්වය: `/start vip`"
+        "📚 චිත්‍රපට නාමාවලිය: <code>/movielist</code>\n"
+        "👑 VIP සාමාජිකත්වය: <code>/start vip</code>"
     )
 
 # =========================================================
@@ -515,7 +515,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 if param.startswith("adstep1_"):
                     mid = param.split("_")[1]
                     step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
-                    await client.send_message(user_id, "🎬 **Step 1 of 2:**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
+                    await client.send_message(user_id, "🎬 <b>Step 1 of 2:</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
                 elif param in ["buyvip", "vip", "buystar_vip"]:
                     await client.send_message(user_id, VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 elif param.startswith("buy_"):
@@ -530,7 +530,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
     if data == "pay_vip_stars":
         ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Access (No Ads)", "vip_sub", VIP_STAR_PRICE)
         if not ok:
-            await callback.message.reply_text(f"⚠️ Stars Invoice Error: `{err}`")
+            await callback.message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
         return
 
     if data == "pay_vip_bank":
@@ -554,12 +554,12 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
         if ADMIN_USER_ID:
             admin_alert = (
-                "🔔 **නව Bank Payment ඉල්ලීමක්!**\n\n"
-                f"👤 **පරිශීලකයා:** {full_name} ({username})\n"
-                f"🆔 **User ID:** `{user_id}`\n"
-                f"🔑 **Reference Code:** `{ref}`\n"
-                f"💰 **මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n"
-                f"📌 *User slip එක එවූ පසු VIP දීමට:*\n`/addvip {user_id}`"
+                "🔔 <b>නව Bank Payment ඉල්ලීමක්!</b>\n\n"
+                f"👤 <b>පරිශීලකයා:</b> {html.escape(full_name)} ({username})\n"
+                f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+                f"🔑 <b>Reference Code:</b> <code>{ref}</code>\n"
+                f"💰 <b>මුදල:</b> <code>Rs. {VIP_LKR_PRICE}</code>\n\n"
+                f"📌 <i>User slip එක එවූ පසු VIP දීමට:</i>\n<code>/addvip {user_id}</code>"
             )
             try:
                 await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
@@ -568,13 +568,13 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
         admin_link = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
         text = (
-            "🇱🇰 **බැංකු තැන්පතු මඟින් VIP ලබාගැනීම:**\n\n"
-            f"💰 **ගෙවිය යුතු මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n"
+            "🇱🇰 <b>බැංකු තැන්පතු මඟින් VIP ලබාගැනීම:</b>\n\n"
+            f"💰 <b>ගෙවිය යුතු මුදල:</b> <code>Rs. {VIP_LKR_PRICE}</code>\n\n"
             f"{BANK_DETAILS}\n\n"
-            f"⚠️ **අනිවාර්යයි (Very Important):**\n"
+            f"⚠️ <b>අනිවාර්යයි (Very Important):</b>\n"
             f"මුදල් තැන්පත් කරන විට Reference/Remarks සඳහා පහත ඔබගේ Unique Code එක ඇතුළත් කරන්න:\n"
-            f"🔑 **ඔබගේ Reference Code එක:** `{ref}`\n\n"
-            f"📸 මුදල් ගෙවූ පසු Payment Slip හෝ Screenshot එක ඔබගේ User ID (`{user_id}`) සමඟ Admin වෙත එවන්න."
+            f"🔑 <b>ඔබගේ Reference Code එක:</b> <code>{ref}</code>\n\n"
+            f"📸 මුදල් ගෙවූ පසු Payment Slip හෝ Screenshot එක ඔබගේ User ID (<code>{user_id}</code>) සමඟ Admin වෙත එවන්න."
         )
         btns = [[InlineKeyboardButton("📩 Send Slip to Admin", url=admin_link)]] if admin_link else []
         await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
@@ -601,7 +601,7 @@ async def handle_forward_to_vip(client: Client, message: Message):
                         break
 
     if not target_msg_id:
-        m = re.search(r"🎬\s*\*\*(.*?)(?:\s*\(\d{4}\))?\*\*", orig)
+        m = re.search(r"🎬\s*(?:<b>|\*\*)(.*?)(?:\s*\(\d{4}\))?(?:</b>|\*\*)", orig)
         if m:
             doc = await files_col.find_one({"file_name": {"$regex": re.escape(m.group(1).strip()), "$options": "i"}})
             if doc:
@@ -616,15 +616,15 @@ async def handle_forward_to_vip(client: Client, message: Message):
     clean_caption = re.sub(r"👇.*", "", orig, flags=re.DOTALL).strip()
     if not clean_caption:
         meta = await fetch_metadata(file_name)
-        clean_caption = f"🎬 **{meta['title']} ({meta['year']})**\n\n⭐ **IMDb Rating:** `{meta['rating']} / 10`\n🎭 **Genres:** `{meta['genres']}`"
+        clean_caption = f"🎬 <b>{html.escape(meta['title'])} ({meta['year']})</b>\n\n⭐ <b>IMDb Rating:</b> <code>{meta['rating']} / 10</code>\n🎭 <b>Genres:</b> <code>{meta['genres']}</code>"
 
-    vip_caption = f"{clean_caption}\n\n👑 **VIP Direct File:** දැන්වීම් නොමැතිව download කරගන්න 👇"
+    vip_caption = f"{clean_caption}\n\n👑 <b>VIP Direct File:</b> දැන්වීම් නොමැතිව download කරගන්න 👇"
     vip_markup = {"inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{BOT_USERNAME}?start=vipfile_{target_msg_id}"}]]}
 
     status = await message.reply_text("⏳ VIP Channel එකට Auto-Post කරමින් පවතී...")
-    sent = False
     target_vip = str(VIP_CHANNEL).strip()
 
+    poster_url = DEFAULT_POSTER
     if message.photo:
         p = await client.download_media(message.photo.file_id)
         if p and os.path.exists(p):
@@ -634,26 +634,27 @@ async def handle_forward_to_vip(client: Client, message: Message):
                     form.add_field("chat_id", target_vip)
                     form.add_field("photo", f.read(), filename="poster.jpg")
                     form.add_field("caption", vip_caption)
-                    form.add_field("parse_mode", "Markdown")
+                    form.add_field("parse_mode", "HTML")
                     form.add_field("reply_markup", json.dumps(vip_markup))
                     async with aiohttp.ClientSession() as s:
                         async with s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data=form) as r:
                             res = await r.json()
                             if res.get("ok"):
-                                sent = True
+                                await status.edit_text(f"✅ <b>'{file_name}'</b> සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
+                                return
             except Exception:
                 pass
             finally:
                 os.remove(p)
 
-    if not sent:
+    res = await send_tg_photo_url(target_vip, poster_url, vip_caption, vip_markup)
+    if not res.get("ok"):
         res = await send_tg_message(target_vip, vip_caption, vip_markup)
-        sent = res.get("ok", False)
 
-    if sent:
-        await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
+    if res.get("ok"):
+        await status.edit_text(f"✅ <b>'{file_name}'</b> සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
     else:
-        await status.edit_text(f"❌ VIP Post Error!")
+        await status.edit_text("❌ VIP Post Error!")
 
 # =========================================================
 # HANDLER 5: ADMIN /addvip COMMAND
@@ -665,7 +666,7 @@ async def admin_add_vip_handler(client: Client, message: Message):
 
     args = message.text.split()
     if len(args) < 2:
-        await message.reply_text("❌ **භාවිතය:** `/addvip <USER_ID>`")
+        await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt;</code>")
         return
 
     try:
@@ -690,9 +691,9 @@ async def admin_add_vip_handler(client: Client, message: Message):
                     link = res["result"]["invite_link"]
                     await client.send_message(
                         chat_id=target_user_id,
-                        text=f"🎉 **ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}"
+                        text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
                     )
-                    await message.reply_text(f"✅ User `{target_user_id}` VIP ලෙස සක්‍රිය කරන ලදී.")
+                    await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.")
                     return
         await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
     except Exception as e:
@@ -716,7 +717,7 @@ async def handle_payment_success(client: Client, message: Message):
 
     if payload.startswith("single_"):
         mid = int(payload.split("_")[1])
-        await message.reply_text("🎉 **Stars ගෙවීම සාර්ථකයි!** මෙන්න Movie එක:")
+        await message.reply_text("🎉 <b>Stars ගෙවීම සාර්ථකයි!</b> මෙන්න Movie එක:")
         await deliver_movie_file(message.chat.id, mid, is_vip=True)
 
     elif payload == "vip_sub":
@@ -729,7 +730,7 @@ async def handle_payment_success(client: Client, message: Message):
                 res = await resp.json()
                 if res.get("ok"):
                     link = res["result"]["invite_link"]
-                    await message.reply_text(f"🎉 **VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}")
+                    await message.reply_text(f"🎉 <b>VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
 
 # =========================================================
 # SERVER INIT & RUNNER
