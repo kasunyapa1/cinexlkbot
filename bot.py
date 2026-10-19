@@ -286,6 +286,14 @@ async def get_fsub_markup(param: str = "") -> InlineKeyboardMarkup:
     btns.append([InlineKeyboardButton("🔄 Verify & Unlock", callback_data=f"verify_{param}" if param else "verify_root")])
     return InlineKeyboardMarkup(btns)
 
+def get_vip_options_markup():
+    approx_lkr = int(VIP_STAR_PRICE * 6.8)
+    savings = max(0, approx_lkr - VIP_LKR_PRICE)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⭐ Pay with Telegram Stars ({VIP_STAR_PRICE} ⭐️ / ~Rs. {approx_lkr})", callback_data="pay_vip_stars")],
+        [InlineKeyboardButton(f"🇱🇰 Bank Transfer - Rs. {VIP_LKR_PRICE} (Save Rs. {savings} 🔥)", callback_data="pay_vip_bank")]
+    ])
+
 # =========================================================
 # MOVIE METADATA CLEANER & FETCHER
 # =========================================================
@@ -341,7 +349,6 @@ async def dispatch_storage_to_main(client: Client, message: Message):
             me = await client.get_me()
             BOT_USERNAME = me.username
 
-        # Save to DB
         await files_col.update_one(
             {"message_id": msg_id},
             {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
@@ -364,7 +371,7 @@ async def dispatch_storage_to_main(client: Client, message: Message):
                 [{"text": "📥 Fast Download (Ads)", "url": f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}"}],
                 [
                     {"text": f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", "url": f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"},
-                    {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=buystar_vip"}
+                    {"text": "👑 Buy VIP Pass (Monthly)", "url": f"https://t.me/{BOT_USERNAME}?start=vip"}
                 ]
             ]
         }
@@ -372,13 +379,11 @@ async def dispatch_storage_to_main(client: Client, message: Message):
         target = str(MAIN_CHANNEL_RAW).strip()
         sent = False
 
-        # Try sending with Poster URL via Bot API
         if meta.get("poster") and meta["poster"].startswith("http"):
             res = await send_tg_photo_url(target, meta["poster"], caption, markup)
             if res.get("ok"):
                 sent = True
 
-        # Fallback to Pyrogram send_photo using video thumbnail if available
         if not sent and hasattr(media, "thumbs") and media.thumbs:
             try:
                 t = await client.download_media(media.thumbs[0].file_id)
@@ -387,7 +392,7 @@ async def dispatch_storage_to_main(client: Client, message: Message):
                         [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
                         [
                             InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buystar_vip")
+                            InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=vip")
                         ]
                     ]))
                     os.remove(t)
@@ -395,11 +400,10 @@ async def dispatch_storage_to_main(client: Client, message: Message):
             except Exception:
                 pass
 
-        # Final fallback: text message (100% delivered)
         if not sent:
             await send_tg_message(target, caption, markup)
 
-        print(f"✅ Successfully auto-posted '{file_name}' to Main Channel")
+        print(f"✅ Auto-posted '{file_name}' to Main Channel")
 
     except Exception as e:
         print(f"❌ Error dispatching to main: {e}")
@@ -409,7 +413,6 @@ async def on_channel_upload(client: Client, message: Message):
     if not message.chat:
         return
     
-    # Clean check: match chat ID against STORAGE_CHANNEL_RAW
     chat_str = str(message.chat.id)
     storage_str = str(STORAGE_CHANNEL_RAW)
     
@@ -533,19 +536,17 @@ async def handle_start_cmd(client: Client, message: Message):
             await message.reply_text(f"⚠️ Stars Error: `{err}`")
         return
 
-    # VIP Star Buy
-    if param == "buystar_vip":
-        ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Channel Access + No Ads Direct Files", "vip_sub", VIP_STAR_PRICE)
-        if not ok:
-            await message.reply_text(f"⚠️ Stars Error: `{err}`")
-        return
-
-    # VIP Menu
+    # VIP Menu (Monthly VIP Pass with Stars & Bank Transfer)
     if param == "vip":
-        await message.reply_text("👑 **Cinex LK VIP Pass (30 Days)**", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"⭐ Pay with Telegram Stars ({VIP_STAR_PRICE} ⭐️)", callback_data="pay_vip_stars")],
-            [InlineKeyboardButton(f"🇱🇰 Bank Transfer - Rs. {VIP_LKR_PRICE}", callback_data="pay_vip_bank")]
-        ]))
+        vip_text = (
+            "👑 **Cinex LK VIP Pass (Monthly - 30 Days)**\n\n"
+            "✨ **VIP සාමාජිකත්වයේ වාසි:**\n"
+            "• කිසිදු දැන්වීමක් නොමැත (100% No Ads)\n"
+            "• Direct Files ක්ෂණිකව ලබාගත හැක\n"
+            "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n\n"
+            "👇 **ගෙවීම් කිරීමට කැමති ආකාරය තෝරන්න:**"
+        )
+        await message.reply_text(vip_text, reply_markup=get_vip_options_markup())
         return
 
     # Force Sub Check
@@ -586,8 +587,8 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     mid = param.split("_")[1]
                     step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                     await client.send_message(user_id, "🎬 **Step 1 of 2:**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
-                elif param == "buystar_vip":
-                    await send_tg_invoice(user_id, "👑 VIP Pass (30 Days)", "VIP Access", "vip_sub", VIP_STAR_PRICE)
+                elif param == "vip":
+                    await client.send_message(user_id, "👑 **Cinex LK VIP Pass**", reply_markup=get_vip_options_markup())
                 elif param.startswith("buy_"):
                     mid = param.split("_")[1]
                     await send_tg_invoice(user_id, "⚡ Direct Movie File", "No Ads File", f"single_{mid}", SINGLE_STAR_PRICE)
@@ -597,19 +598,106 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී Verify ඔබන්න.", show_alert=True)
         return
 
+    # 1. Pay VIP with Stars Callback
     if data == "pay_vip_stars":
-        await send_tg_invoice(user_id, "👑 VIP Pass (30 Days)", "VIP Access", "vip_sub", VIP_STAR_PRICE)
+        ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Access (No Ads)", "vip_sub", VIP_STAR_PRICE)
+        if not ok:
+            await callback.message.reply_text(f"⚠️ Stars Invoice Error: `{err}`")
         return
 
+    # 2. Pay VIP with Bank Transfer Callback
     if data == "pay_vip_bank":
         ref = f"CX-{random.randint(10000, 99999)}"
-        text = f"🇱🇰 **බැංකු තැන්පතු මඟින් VIP ලබාගැනීම:**\n\n💰 **ගෙවිය යුතු මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n{BANK_DETAILS}\n\n🔑 **ඔබගේ Reference Code එක:** `{ref}`\n\n📸 Payment Slip එක ඔබගේ User ID (`{user_id}`) සමඟ Admin වෙත එවන්න."
-        btns = [[InlineKeyboardButton("📩 Send Slip to Admin", url=f"https://t.me/{ADMIN_USERNAME}")]] if ADMIN_USERNAME else []
+        username = f"@{callback.from_user.username}" if callback.from_user.username else "No Username"
+        full_name = f"{callback.from_user.first_name or ''} {callback.from_user.last_name or ''}".strip()
+
+        await manual_orders_col.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "user_id": user_id,
+                "username": username,
+                "name": full_name,
+                "ref_code": ref,
+                "amount": VIP_LKR_PRICE,
+                "status": "pending",
+                "created_at": datetime.utcnow()
+            }},
+            upsert=True
+        )
+
+        if ADMIN_USER_ID:
+            admin_alert = (
+                "🔔 **නව Bank Payment ඉල්ලීමක්!**\n\n"
+                f"👤 **පරිශීලකයා:** {full_name} ({username})\n"
+                f"🆔 **User ID:** `{user_id}`\n"
+                f"🔑 **Reference Code:** `{ref}`\n"
+                f"💰 **මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n"
+                f"📌 *User slip එක එවූ පසු VIP දීමට:*\n`/addvip {user_id}`"
+            )
+            try:
+                await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
+            except Exception:
+                pass
+
+        admin_link = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
+        text = (
+            "🇱🇰 **බැංකු තැන්පතු මඟින් VIP ලබාගැනීම:**\n\n"
+            f"💰 **ගෙවිය යුතු මුදල:** `Rs. {VIP_LKR_PRICE}`\n\n"
+            f"{BANK_DETAILS}\n\n"
+            f"⚠️ **අනිවාර්යයි (Very Important):**\n"
+            f"මුදල් තැන්පත් කරන විට Reference/Remarks සඳහා පහත ඔබගේ Unique Code එක ඇතුළත් කරන්න:\n"
+            f"🔑 **ඔබගේ Reference Code එක:** `{ref}`\n\n"
+            f"📸 මුදල් ගෙවූ පසු Payment Slip හෝ Screenshot එක ඔබගේ User ID (`{user_id}`) සමඟ Admin වෙත එවන්න."
+        )
+        btns = [[InlineKeyboardButton("📩 Send Slip to Admin", url=admin_link)]] if admin_link else []
         await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
         return
 
 # =========================================================
-# PAYMENT PRECHECKOUT & SUCCESS
+# ADMIN /addvip COMMAND (MANUAL BANK APPROVAL)
+# =========================================================
+@app.on_message(filters.command("addvip") & filters.private)
+async def admin_add_vip_handler(client: Client, message: Message):
+    if ADMIN_USER_ID and message.from_user.id != ADMIN_USER_ID:
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply_text("❌ **භාවිතය:** `/addvip <USER_ID>`")
+        return
+
+    try:
+        target_user_id = int(args[1].strip())
+    except ValueError:
+        await message.reply_text("❌ වැරදි User ID එකකි.")
+        return
+
+    expiry_date = datetime.utcnow() + timedelta(days=30)
+    await vip_users_col.update_one(
+        {"user_id": target_user_id},
+        {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+        upsert=True
+    )
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+        payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    link = res["result"]["invite_link"]
+                    await client.send_message(
+                        chat_id=target_user_id,
+                        text=f"🎉 **ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}"
+                    )
+                    await message.reply_text(f"✅ User `{target_user_id}` VIP ලෙස සක්‍රිය කරන ලදී.")
+                    return
+        await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
+    except Exception as e:
+        await message.reply_text(f"⚠️ Invite Error: {e}")
+
+# =========================================================
+# PAYMENT PRECHECKOUT & SUCCESS (STARS AUTO-DELIVERY)
 # =========================================================
 @app.on_raw_update()
 async def handle_precheckout(client: Client, update, users, chats):
@@ -642,14 +730,14 @@ async def handle_payment_success(client: Client, message: Message):
                     await message.reply_text(f"🎉 **VIP සාමාජිකත්වය සක්‍රිය විය!**\n\n🔗 VIP Channel Link:\n{link}")
 
 # =========================================================
-# SERVER RUNNER
+# SERVER INIT & RUNNER
 # =========================================================
 async def main():
     global BOT_USERNAME
     await app.start()
     me = await app.get_me()
     BOT_USERNAME = me.username
-    print(f"🤖 Bot Started as @{BOT_USERNAME}")
+    print(f"🤖 Bot Started Successfully as @{BOT_USERNAME}")
 
     web_app = web.Application()
     web_app.add_routes(routes)
@@ -657,7 +745,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Web Server Live on port {PORT}")
+    print(f"🌐 Cinex LK Web Engine Live on port {PORT}")
 
     await idle()
     await app.stop()
