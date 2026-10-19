@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import random
 import asyncio
 from datetime import datetime, timedelta
@@ -408,8 +409,23 @@ async def fetch_movie_metadata_online(raw_file_name: str):
         "poster": None
     }
 
+async def download_image_bytes(url: str):
+    if not url or not url.startswith("http"):
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    b = io.BytesIO(data)
+                    b.name = "poster.jpg"
+                    return b
+    except Exception:
+        pass
+    return None
+
 # =========================================================
-# HELPER: DISPATCH MOVIE POST (MAIN & VIP SAFE CHANNEL POSTING)
+# HELPER: DISPATCH MOVIE POST (IN-MEMORY PHOTO GUARANTEE)
 # =========================================================
 async def dispatch_movie_post(client: Client, media, file_name: str, msg_id: int, post_to_main: bool = True, post_to_vip: bool = True):
     size_mb = round(media.file_size / (1024 * 1024), 2)
@@ -453,54 +469,63 @@ async def dispatch_movie_post(client: Client, media, file_name: str, msg_id: int
         "👇 **චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:**"
     )
 
-    # Poster priority: OMDb Online Poster -> Telegram Media Thumb
-    poster_to_send = meta.get("poster")
-    if not poster_to_send and hasattr(media, "thumbs") and media.thumbs:
-        poster_to_send = media.thumbs[0].file_id
+    # 1. Resolve photo object safely (Byte buffer or file_id)
+    photo_obj = None
+    if meta.get("poster"):
+        photo_obj = await download_image_bytes(meta["poster"])
 
-    # 1. POST TO MAIN CHANNEL (ONLY ON STORAGE UPLOAD)
+    if not photo_obj and hasattr(media, "thumbs") and media.thumbs:
+        try:
+            thumb_path = await client.download_media(media.thumbs[0].file_id)
+            if thumb_path and os.path.exists(thumb_path):
+                photo_obj = thumb_path
+        except Exception:
+            photo_obj = media.thumbs[0].file_id
+
+    # 2. POST TO MAIN CHANNEL
     if post_to_main and MAIN_CHANNEL:
         try:
-            target = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
-            if poster_to_send:
-                await client.send_photo(chat_id=target, photo=poster_to_send, caption=post_caption, reply_markup=main_markup)
+            target_main = int(MAIN_CHANNEL) if str(MAIN_CHANNEL).lstrip("-").isdigit() else MAIN_CHANNEL
+            if photo_obj:
+                if isinstance(photo_obj, io.BytesIO):
+                    photo_obj.seek(0)
+                await client.send_photo(chat_id=target_main, photo=photo_obj, caption=post_caption, reply_markup=main_markup)
             else:
-                await client.send_message(chat_id=target, text=post_caption, reply_markup=main_markup)
+                await client.send_message(chat_id=target_main, text=post_caption, reply_markup=main_markup)
         except Exception as e:
+            print(f"Main post error: {e}")
             try:
                 await client.send_message(chat_id=MAIN_CHANNEL, text=post_caption, reply_markup=main_markup)
             except Exception:
                 pass
 
-    # 2. POST TO VIP CHANNEL
+    # 3. POST TO VIP CHANNEL (NO DUPLICATE TO MAIN)
     if post_to_vip and VIP_CHANNEL:
         target_vip = int(VIP_CHANNEL) if str(VIP_CHANNEL).lstrip("-").isdigit() else VIP_CHANNEL
         sent_vip = False
-        if poster_to_send:
+
+        if photo_obj:
             try:
-                await client.send_photo(chat_id=target_vip, photo=poster_to_send, caption=post_caption, reply_markup=vip_markup)
+                if isinstance(photo_obj, io.BytesIO):
+                    photo_obj.seek(0)
+                await client.send_photo(chat_id=target_vip, photo=photo_obj, caption=post_caption, reply_markup=vip_markup)
                 sent_vip = True
-            except Exception:
+            except Exception as e:
+                print(f"VIP send_photo error: {e}")
                 sent_vip = False
 
         if not sent_vip:
             try:
                 await client.send_message(chat_id=target_vip, text=post_caption, reply_markup=vip_markup)
-            except Exception:
-                try:
-                    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                    payload = {
-                        "chat_id": int(str(VIP_CHANNEL)),
-                        "text": post_caption,
-                        "reply_markup": {
-                            "inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": vip_direct_url}]]
-                        },
-                        "parse_mode": "Markdown"
-                    }
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(url, json=payload)
-                except Exception:
-                    pass
+            except Exception as e:
+                print(f"VIP send_message error: {e}")
+
+    # Cleanup temp thumbnail file if created
+    if isinstance(photo_obj, str) and os.path.exists(photo_obj):
+        try:
+            os.remove(photo_obj)
+        except Exception:
+            pass
 
 # =========================================================
 # AUTO-POST STORAGE TO CHANNELS (MAIN + VIP)
@@ -534,14 +559,13 @@ async def handle_storage_upload(client: Client, message: Message):
         file_name = media.file_name or "Unknown Movie"
         msg_id = message.id
 
-        # Post to both Main and VIP channels on new storage upload
         await dispatch_movie_post(client, media, file_name, msg_id, post_to_main=True, post_to_vip=True)
 
     except Exception as e:
         print(f"❌ Storage Upload error: {e}")
 
 # =========================================================
-# FORWARDED POST HANDLER (ADMIN FORWARD TO BOT -> VIP CHANNEL ONLY)
+# FORWARDED POST HANDLER (ADMIN FORWARD TO BOT -> VIP ONLY)
 # =========================================================
 @app.on_message(filters.private & filters.forwarded)
 async def handle_admin_forwarded_post(client: Client, message: Message):
@@ -556,11 +580,10 @@ async def handle_admin_forwarded_post(client: Client, message: Message):
     file_name = media.file_name or "Unknown Movie"
     msg_id = message.forward_from_message_id or message.id
 
-    status = await message.reply_text("⏳ මෙම චිත්‍රපටය VIP Channel එකට පමණක් Post කරමින් පවතී...")
+    status = await message.reply_text("⏳ මෙම චිත්‍රපටය Poster & Details සමඟ VIP Channel එකට පමණක් Post කරමින් පවතී...")
     try:
-        # post_to_main=False ensures NO duplicate post to Main Channel
         await dispatch_movie_post(client, media, file_name, msg_id, post_to_main=False, post_to_vip=True)
-        await status.edit_text(f"✅ **'{file_name}'** සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී! (Main channel එකට duplicate වී නැත)")
+        await status.edit_text(f"✅ **'{file_name}'** Poster සහ Details සහිතව සාර්ථකව VIP Channel එකට Auto-Post කරන ලදී!")
     except Exception as e:
         await status.edit_text(f"❌ Auto-post දෝෂය: {e}")
 
