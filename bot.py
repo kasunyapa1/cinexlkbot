@@ -66,7 +66,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
-# Clients
+# In-Memory Sessions
 main_bot = Client(
     "main_ctrl_session",
     api_id=API_ID,
@@ -406,7 +406,7 @@ async def process_storage_upload(client: Client, message: Message):
     size_mb = round(media.file_size / (1024 * 1024), 2)
     msg_id = message.id
 
-    print(f"🎬 [PROCESSING STORAGE UPLOAD] ID: {msg_id} | Name: {file_name}", flush=True)
+    print(f"🎬 [STARTING STORAGE UPLOAD] ID: {msg_id} | Name: {file_name}", flush=True)
 
     await files_col.update_one(
         {"message_id": msg_id},
@@ -440,132 +440,135 @@ async def process_storage_upload(client: Client, message: Message):
 
     try:
         await client.send_photo(chat_id=message.chat.id, photo=poster_url, caption=caption, reply_markup=preview_markup)
+        print(f"✅ [SUCCESS] Preview photo posted for ID {msg_id}", flush=True)
     except Exception as e:
-        print(f"Photo send error: {e}, falling back to text", flush=True)
-        await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
-        
-    print(f"✅ [STORAGE PREVIEW READY] Posted controls for ID {msg_id}", flush=True)
+        print(f"⚠️ Photo fail ({e}), sending text preview...", flush=True)
+        try:
+            await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
+            print(f"✅ [SUCCESS] Preview text posted for ID {msg_id}", flush=True)
+        except Exception as e2:
+            print(f"❌ [FATAL] Cannot send preview to storage: {e2}", flush=True)
 
-# 1. CHANNEL POST LISTENER (Broadcast Channels)
-@main_bot.on_message(filters.channel)
-async def main_bot_channel_post_handler(client: Client, message: Message):
+# UNIVERSAL GLOBAL LISTENER (Catches EVERYTHING that reaches the Bot)
+@main_bot.on_message()
+async def universal_main_listener(client: Client, message: Message):
     if not message.chat:
         return
+
     chat_id_str = str(message.chat.id)
     chat_clean = clean_channel_id(chat_id_str)
+    has_media = bool(message.document or message.video)
 
+    # Global Logger
+    print(f"🚨 [RAW UPDATE] Chat ID: {chat_id_str} | Title: {getattr(message.chat, 'title', 'Private')} | Type: {message.chat.type} | Media: {has_media}", flush=True)
+
+    # 1. STORAGE CHANNEL MATCHING
     if chat_clean == STORAGE_CLEAN or chat_id_str == STORAGE_CHANNEL_RAW:
-        print(f"📦 [STORAGE CHANNEL POST] Event captured! Msg ID: {message.id}", flush=True)
-        if message.document or message.video:
+        print(f"🎯 [MATCHED STORAGE CHANNEL] Upload Event detected! ID: {message.id}", flush=True)
+        if has_media:
             asyncio.create_task(process_storage_upload(client, message))
-
-# 2. PRIVATE CHAT & REGULAR MESSAGE LISTENER
-@main_bot.on_message(filters.private)
-async def main_bot_private_handler(client: Client, message: Message):
-    text = (message.text or "").strip()
-    user_id = message.from_user.id if message.from_user else 0
-    print(f"[MAIN BOT RECEIVED] User: {user_id} | Text: '{text}'", flush=True)
-
-    if text.startswith("/addvip"):
-        if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
-            return
-        args = text.split()
-        if len(args) < 2:
-            await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt;</code>")
-            return
-        try:
-            target_user_id = int(args[1].strip())
-        except ValueError:
-            await message.reply_text("❌ වැරදි User ID එකකි.")
-            return
-
-        expiry_date = datetime.utcnow() + timedelta(days=30)
-        await vip_users_col.update_one(
-            {"user_id": target_user_id},
-            {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
-            upsert=True
-        )
-        try:
-            url = f"https://api.telegram.org/bot{MAIN_BOT_TOKEN}/createChatInviteLink"
-            payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as resp:
-                    res = await resp.json()
-                    if res.get("ok"):
-                        link = res["result"]["invite_link"]
-                        await client.send_message(
-                            chat_id=target_user_id,
-                            text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
-                        )
-                        await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.")
-                        return
-            await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
-        except Exception as e:
-            await message.reply_text(f"⚠️ Invite Error: {e}")
         return
 
-    if text.startswith("/start"):
-        parts = text.split(maxsplit=1)
-        param = parts[1].strip() if len(parts) > 1 else ""
+    # 2. PRIVATE USER CHATS
+    if message.chat.type == ChatType.PRIVATE:
+        text = (message.text or "").strip()
+        user_id = message.from_user.id if message.from_user else 0
 
-        # 1. VIP Info
-        if param in ["buyvip", "vip", "buystar_vip"]:
-            await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
-            return
+        if text.startswith("/addvip"):
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            args = text.split()
+            if len(args) < 2:
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt;</code>")
+                return
+            try:
+                target_user_id = int(args[1].strip())
+            except ValueError:
+                await message.reply_text("❌ වැරදි User ID එකකි.")
+                return
 
-        # 2. Instant Stars Purchase (Immediate Invoice)
-        if param.startswith("buy_"):
-            wait_m = await message.reply_text("⏳ <b>ඉන්වොයිසිය සකසමින් පවතී...</b>")
-            mid = param.split("_")[1]
-            f_doc = await files_col.find_one({"message_id": int(mid)})
-            m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
-            clean_t = clean_movie_title(m_title)[0]
-
-            ok, err = await send_tg_invoice(
-                chat_id=user_id,
-                title=f"⚡ {clean_t[:25]}",
-                description=f"{clean_t} චිත්‍රපටය Telegram Stars හරහා ක්ෂණිකව ලබාගැනීමට.",
-                payload=f"single_{mid}",
-                stars=SINGLE_STAR_PRICE
+            expiry_date = datetime.utcnow() + timedelta(days=30)
+            await vip_users_col.update_one(
+                {"user_id": target_user_id},
+                {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+                upsert=True
             )
-            await wait_m.delete()
-            if not ok:
-                await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
+            try:
+                url = f"https://api.telegram.org/bot{MAIN_BOT_TOKEN}/createChatInviteLink"
+                payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload) as resp:
+                        res = await resp.json()
+                        if res.get("ok"):
+                            link = res["result"]["invite_link"]
+                            await client.send_message(
+                                chat_id=target_user_id,
+                                text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
+                            )
+                            await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.")
+                            return
+                await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
+            except Exception as e:
+                await message.reply_text(f"⚠️ Invite Error: {e}")
             return
 
-        # 3. Ad Step 1 Pass
-        if param.startswith("tok1_"):
-            mid = param.split("_")[2]
-            step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}"
+        if text.startswith("/start"):
+            parts = text.split(maxsplit=1)
+            param = parts[1].strip() if len(parts) > 1 else ""
+
+            if param in ["buyvip", "vip", "buystar_vip"]:
+                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
+                return
+
+            if param.startswith("buy_"):
+                wait_m = await message.reply_text("⏳ <b>ඉන්වොයිසිය සකසමින් පවතී...</b>")
+                mid = param.split("_")[1]
+                f_doc = await files_col.find_one({"message_id": int(mid)})
+                m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
+                clean_t = clean_movie_title(m_title)[0]
+
+                ok, err = await send_tg_invoice(
+                    chat_id=user_id,
+                    title=f"⚡ {clean_t[:25]}",
+                    description=f"{clean_t} චිත්‍රපටය Telegram Stars හරහා ක්ෂණිකව ලබාගැනීමට.",
+                    payload=f"single_{mid}",
+                    stars=SINGLE_STAR_PRICE
+                )
+                await wait_m.delete()
+                if not ok:
+                    await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
+                return
+
+            if param.startswith("tok1_"):
+                mid = param.split("_")[2]
+                step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}"
+                await message.reply_text(
+                    "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
+                )
+                return
+
+            if not await check_access(user_id):
+                await message.reply_text(
+                    "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
+                    reply_markup=await get_fsub_markup(param)
+                )
+                return
+
+            if param.startswith("adstep1_"):
+                mid = param.split("_")[1]
+                step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
+                await message.reply_text(
+                    "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
+                )
+                return
+
             await message.reply_text(
-                "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
+                "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
+                "🔍 Movie එකේ නම එවන්න.\n"
+                "👑 VIP සාමාජිකත්වය: <code>/start vip</code>"
             )
-            return
-
-        # 4. Force Sub Validation
-        if not await check_access(user_id):
-            await message.reply_text(
-                "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
-                reply_markup=await get_fsub_markup(param)
-            )
-            return
-
-        # 5. Ad Step 1 Entry
-        if param.startswith("adstep1_"):
-            mid = param.split("_")[1]
-            step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
-            await message.reply_text(
-                "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
-            )
-            return
-
-        await message.reply_text(
-            "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
-            "🔍 Movie එකේ නම එවන්න.\n"
-            "👑 VIP සාමාජිකත්වය: <code>/start vip</code>"
-        )
 
 @main_bot.on_callback_query()
 async def main_bot_callback_handler(client: Client, callback: CallbackQuery):
