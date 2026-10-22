@@ -35,14 +35,14 @@ def parse_target(val: str):
 # CONFIGURATIONS
 # =========================================================
 API_ID = int(os.environ.get("API_ID", "0"))
-API_HASH = os.environ.get("API_HASH", "")
-MAIN_BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-FILE_BOT_TOKEN = os.environ.get("FILE_BOT_TOKEN", MAIN_BOT_TOKEN)
+API_HASH = os.environ.get("API_HASH", "").strip()
+MAIN_BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+FILE_BOT_TOKEN = os.environ.get("FILE_BOT_TOKEN", MAIN_BOT_TOKEN).strip()
 
 FILE_BOT_USERNAME = os.environ.get("FILE_BOT_USERNAME", "").replace("@", "").strip()
 MAIN_BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "").strip()
 
-MONGO_URI = os.environ.get("MONGO_URI", "")
+MONGO_URI = os.environ.get("MONGO_URI", "").strip()
 
 STORAGE_CHANNEL_RAW = os.environ.get("STORAGE_CHANNEL", "-1004413765578").strip()
 STORAGE_CHANNEL = parse_target(STORAGE_CHANNEL_RAW)
@@ -77,9 +77,24 @@ PORT = int(os.environ.get("PORT", "8080"))
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
-# Clients
-main_bot = Client("main_controller", api_id=API_ID, api_hash=API_HASH, bot_token=MAIN_BOT_TOKEN, workers=16)
-file_bot = Client("file_deliverer", api_id=API_ID, api_hash=API_HASH, bot_token=FILE_BOT_TOKEN, workers=16)
+# Clients (In-Memory to prevent SQLite lockups on container deploy)
+main_bot = Client(
+    "main_ctrl_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=MAIN_BOT_TOKEN,
+    in_memory=True,
+    workers=16
+)
+
+file_bot = Client(
+    "file_dl_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=FILE_BOT_TOKEN,
+    in_memory=True,
+    workers=16
+)
 
 # Database
 db_client = AsyncIOMotorClient(MONGO_URI)
@@ -436,31 +451,27 @@ async def create_storage_preview(client: Client, message: Message):
         await client.send_photo(chat_id=message.chat.id, photo=poster_url, caption=caption, reply_markup=preview_markup)
     except Exception:
         await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
-    print(f"✅ Preview Ready in Storage: {file_name}")
+    print(f"✅ Preview Ready in Storage: {file_name}", flush=True)
 
+# Main Bot: General Message Catch-All
 @main_bot.on_message()
 async def main_bot_message_dispatcher(client: Client, message: Message):
     if not message.chat:
         return
 
-    chat_type_str = str(message.chat.type).lower()
-    is_private = (message.chat.type == ChatType.PRIVATE) or ("private" in chat_type_str)
-
+    # 1. Storage Channel Listener
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
-
-    # Storage Channel Uploads Listener
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
-    # Private Chats
-    if is_private:
-        text = message.text or ""
+    # 2. Private Chats
+    if message.chat.type == ChatType.PRIVATE:
+        text = (message.text or "").strip()
         user_id = message.from_user.id if message.from_user else 0
-        print(f"[DEBUG MAIN BOT] Message from {user_id}: {text}")
+        print(f"[MAIN BOT RECEIVED] User: {user_id} | Text: '{text}'", flush=True)
 
-        # /addvip
         if text.startswith("/addvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -499,17 +510,11 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 await message.reply_text(f"⚠️ Invite Error: {e}")
             return
 
-        # /start
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
 
-            # 1. VIP DETAILS
-            if param in ["buyvip", "vip", "buystar_vip"]:
-                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
-                return
-
-            # 2. INSTANT STARS PURCHASE (NO FSUB BLOCK)
+            # Instant Stars Purchase
             if param.startswith("buy_"):
                 mid = param.split("_")[1]
                 f_doc = await files_col.find_one({"message_id": int(mid)})
@@ -527,7 +532,10 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                     await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
                 return
 
-            # 3. AD STEP 1 PASS
+            if param in ["buyvip", "vip", "buystar_vip"]:
+                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
+                return
+
             if param.startswith("tok1_"):
                 mid = param.split("_")[2]
                 step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
@@ -537,7 +545,6 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
-            # 4. FORCE SUB VALIDATION FOR FREE AD USERS
             if not await check_access(user_id):
                 await message.reply_text(
                     "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
@@ -545,7 +552,6 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
-            # 5. AD STEP 1 ENTRY
             if param.startswith("adstep1_"):
                 mid = param.split("_")[1]
                 step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
@@ -566,7 +572,6 @@ async def main_bot_callback_handler(client: Client, callback: CallbackQuery):
     global MAIN_BOT_USERNAME, FILE_BOT_USERNAME
     data = callback.data
     user_id = callback.from_user.id
-
     delivery_bot = FILE_BOT_USERNAME or MAIN_BOT_USERNAME
 
     # Post to Main Channel
@@ -702,7 +707,7 @@ async def main_bot_callback_handler(client: Client, callback: CallbackQuery):
         await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
         return
 
-# Telegram Stars Payments Handlers
+# Stars Precheckout
 @main_bot.on_raw_update()
 async def handle_precheckout(client: Client, update, users, chats):
     if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
@@ -739,34 +744,26 @@ async def handle_payment_success(client: Client, message: Message):
                     await message.reply_text(f"🎉 <b>VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
 
 # =========================================================
-# BOT 2: FILE DELIVERY BOT HANDLERS (SEPARATE BOT)
+# BOT 2: FILE DELIVERY BOT HANDLERS
 # =========================================================
-@file_bot.on_message()
+@file_bot.on_message(filters.private)
 async def file_bot_message_dispatcher(client: Client, message: Message):
-    if not message.chat:
-        return
-
-    chat_type_str = str(message.chat.type).lower()
-    is_private = (message.chat.type == ChatType.PRIVATE) or ("private" in chat_type_str)
-    if not is_private:
-        return
-
-    text = message.text or ""
+    text = (message.text or "").strip()
     user_id = message.from_user.id if message.from_user else 0
-    print(f"[DEBUG FILE BOT] Message from {user_id}: {text}")
+    print(f"[FILE BOT RECEIVED] User: {user_id} | Text: '{text}'", flush=True)
 
     if text.startswith("/start"):
         parts = text.split(maxsplit=1)
         param = parts[1].strip() if len(parts) > 1 else ""
 
-        # VIP Instant File (24 Hours Auto-Delete)
+        # VIP Instant File (24h Delete)
         if param.startswith("vipfile_"):
             mid = int(param.split("_")[1])
             await message.reply_text("👑 <b>Cinex LK VIP File:</b> Direct File එක එවමින් පවතී...")
             await deliver_file_bot_movie(user_id, mid, is_vip=True)
             return
 
-        # Ad Gate Verified File (12 Hours Auto-Delete)
+        # Free Verified File (12h Delete)
         if param.startswith("dl_"):
             mid = int(param.split("_")[2])
             await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b> මෙන්න ඔබගේ චිත්‍රපටය:")
@@ -782,33 +779,41 @@ async def file_bot_message_dispatcher(client: Client, message: Message):
 # =========================================================
 # RUNNER INITIALIZATION
 # =========================================================
-async def main():
-    global MAIN_BOT_USERNAME, FILE_BOT_USERNAME
-    await main_bot.start()
-    me_main = await main_bot.get_me()
-    MAIN_BOT_USERNAME = me_main.username
-    print(f"🤖 Main Controller Bot Started as @{MAIN_BOT_USERNAME}")
-
-    if FILE_BOT_TOKEN != MAIN_BOT_TOKEN:
-        await file_bot.start()
-        me_file = await file_bot.get_me()
-        FILE_BOT_USERNAME = me_file.username
-        print(f"📦 Dedicated File Bot Started as @{FILE_BOT_USERNAME}")
-    else:
-        FILE_BOT_USERNAME = MAIN_BOT_USERNAME
-        print("ℹ️ Running in Single Bot Mode")
-
+async def run_server():
     web_app = web.Application()
     web_app.add_routes(routes)
     runner = web.AppRunner(web_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Cinex Web Engine Live on port {PORT}")
+    print(f"🌐 Cinex Web Engine Live on port {PORT}", flush=True)
 
+async def main():
+    global MAIN_BOT_USERNAME, FILE_BOT_USERNAME
+
+    # 1. Background Web Server
+    await run_server()
+
+    # 2. Start Both Clients
+    await main_bot.start()
+    me_main = await main_bot.get_me()
+    MAIN_BOT_USERNAME = me_main.username
+    print(f"🤖 Main Controller Bot LIVE as @{MAIN_BOT_USERNAME}", flush=True)
+
+    if FILE_BOT_TOKEN and FILE_BOT_TOKEN != MAIN_BOT_TOKEN:
+        await file_bot.start()
+        me_file = await file_bot.get_me()
+        FILE_BOT_USERNAME = me_file.username
+        print(f"📦 File Delivery Bot LIVE as @{FILE_BOT_USERNAME}", flush=True)
+    else:
+        FILE_BOT_USERNAME = MAIN_BOT_USERNAME
+        print("ℹ️ Running in Single-Bot Mode", flush=True)
+
+    # 3. Idle to keep polling alive
     await idle()
+
     await main_bot.stop()
-    if FILE_BOT_TOKEN != MAIN_BOT_TOKEN:
+    if FILE_BOT_TOKEN and FILE_BOT_TOKEN != MAIN_BOT_TOKEN:
         await file_bot.stop()
 
 if __name__ == "__main__":
