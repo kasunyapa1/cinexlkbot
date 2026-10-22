@@ -12,8 +12,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery,
-    LabeledPrice
+    CallbackQuery
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -505,7 +504,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 return
 
-            # 2. INSTANT STARS PURCHASE (PRIORITY OVER FSUB - ALWAYS OPENS INVOICE)
+            # 2. INSTANT STARS PURCHASE (PRIORITY OVER FSUB)
             if param.startswith("buy_"):
                 mid = param.split("_")[1]
                 f_doc = await files_col.find_one({"message_id": int(mid)})
