@@ -35,8 +35,11 @@ def parse_target(val: str):
 # =========================================================
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-MONGO_URI = os.environ.get("MONGO_URI", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+FILE_BOT_TOKEN = os.environ.get("FILE_BOT_TOKEN", BOT_TOKEN).strip()
+FILE_BOT_USERNAME = os.environ.get("FILE_BOT_USERNAME", "").replace("@", "").strip()
+
+MONGO_URI = os.environ.get("MONGO_URI", "").strip()
 
 STORAGE_CHANNEL_RAW = os.environ.get("STORAGE_CHANNEL", "-1004413765578").strip()
 STORAGE_CHANNEL = parse_target(STORAGE_CHANNEL_RAW)
@@ -69,10 +72,10 @@ BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 PRIMARY_AD_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
 PORT = int(os.environ.get("PORT", "8080"))
 
-# Auto-Delete Durations (Free: 12 Hours = 43200s, VIP: 24 Hours = 86400s)
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
+# Active Pyrogram Client (Main Bot Only)
 app = Client(
     "cinex_stable_bot",
     api_id=API_ID,
@@ -91,7 +94,73 @@ STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
 CACHED_BACKUP_LINK = BACKUP_CHANNEL_LINK
 
 # =========================================================
-# WEB SERVER & AD GATE
+# FILE BOT DELIVERY & HTTP DISPATCHER
+# =========================================================
+async def send_file_bot_text(chat_id: int, text: str):
+    url = f"https://api.telegram.org/bot{FILE_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    return res["result"]["message_id"]
+    except Exception:
+        pass
+    return None
+
+async def delete_file_bot_messages(chat_id: int, message_ids: list):
+    url = f"https://api.telegram.org/bot{FILE_BOT_TOKEN}/deleteMessages"
+    payload = {"chat_id": chat_id, "message_ids": message_ids}
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8))
+    except Exception:
+        pass
+
+async def auto_delete_file_task(chat_id: int, msg_ids: list, delay: int):
+    await asyncio.sleep(delay)
+    await delete_file_bot_messages(chat_id, msg_ids)
+    await send_file_bot_text(chat_id, "🗑️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත චිත්‍රපටය Chat එකෙන් ඉවත් කරන ලදී.</b>")
+
+async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = False):
+    delay = VIP_USER_DELETE_DURATION if is_vip else FREE_USER_DELETE_DURATION
+    time_label = "පැය 24කින්" if is_vip else "පැය 12කින්"
+
+    try:
+        await files_col.update_one({"message_id": int(message_id)}, {"$inc": {"download_count": 1}})
+    except Exception:
+        pass
+
+    warn_text = (
+        "⚡ <b>Cinex LK Delivery:</b>\n\n"
+        f"⚠️ මෙම චිත්‍රපටය තවත් <b>{time_label}</b> Chat එකෙන් ඉවත් වේ.\n"
+        "📥 Device එකට Save කරගැනීමට වීඩියෝවේ Menu එකෙන් <b>'Save to Downloads'</b> දෙන්න.\n"
+        "<i>(Save කළ පසු Chat එකෙන් මැකුණද ඔබගේ Phone එකෙහි සුරක්ෂිතව පවතී)</i>"
+    )
+
+    url = f"https://api.telegram.org/bot{FILE_BOT_TOKEN}/copyMessage"
+    payload = {"chat_id": int(chat_id), "from_chat_id": str(STORAGE_CHANNEL_RAW), "message_id": int(message_id)}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    sent_file_id = res["result"]["message_id"]
+                    warn_msg_id = await send_file_bot_text(chat_id, warn_text)
+                    ids_to_del = [sent_file_id]
+                    if warn_msg_id:
+                        ids_to_del.append(warn_msg_id)
+                    asyncio.create_task(auto_delete_file_task(chat_id, ids_to_del, delay))
+                    return True
+                else:
+                    await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.</b>")
+    except Exception as e:
+        await send_file_bot_text(chat_id, f"❌ Delivery Error: {e}")
+    return False
+
+# =========================================================
+# WEB SERVER, AD GATE & FILE BOT WEBHOOK
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -145,7 +214,7 @@ SAME_PAGE_GATE_HTML = """
 
 @routes.get("/")
 async def root_ping(request):
-    return web.Response(text="Cinex LK Bot Alive", status=200)
+    return web.Response(text="Cinex LK Hybrid Engine Alive", status=200)
 
 @routes.get("/gate/step1/{user_id}/{msg_id}")
 async def gate_step1(request):
@@ -160,11 +229,41 @@ async def gate_step2(request):
     user_id = request.match_info['user_id']
     msg_id = request.match_info['msg_id']
     token = f"tok2_{user_id}_{msg_id}"
-    html_page = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
+    target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
+    html_page = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=target_delivery_bot, token=token)
     return web.Response(text=html_page, content_type='text/html')
 
+# Dedicated Webhook for File Delivery Bot
+@routes.post("/filebot_webhook")
+async def file_bot_webhook_handler(request):
+    try:
+        data = await request.json()
+        message = data.get("message", {})
+        text = str(message.get("text", "")).strip()
+        chat_id = message.get("chat", {}).get("id")
+
+        if chat_id and text.startswith("/start"):
+            parts = text.split(maxsplit=1)
+            param = parts[1].strip() if len(parts) > 1 else ""
+
+            if param.startswith("vipfile_"):
+                mid = int(param.split("_")[1])
+                await send_file_bot_text(chat_id, "👑 <b>VIP Direct File:</b> ගොනුව එවමින් පවතී...")
+                asyncio.create_task(deliver_file_bot_movie(chat_id, mid, is_vip=True))
+
+            elif param.startswith("tok2_"):
+                mid = int(param.split("_")[2])
+                await send_file_bot_text(chat_id, "🎉 <b>සත්‍යාපනය සාර්ථකයි!</b> මෙන්න ඔබගේ චිත්‍රපටය:")
+                asyncio.create_task(deliver_file_bot_movie(chat_id, mid, is_vip=False))
+
+            else:
+                await send_file_bot_text(chat_id, f"👋 <b>Cinex LK File Delivery Service</b>\n\nචිත්‍රපට ලබාගැනීමට Main Channel එක හා සම්බන්ධ වන්න:\n📢 {MAIN_CHANNEL}")
+    except Exception:
+        pass
+    return web.Response(text="ok", status=200)
+
 # =========================================================
-# TELEGRAM HTTP ENGINES
+# TELEGRAM RAW HTTP HELPERS
 # =========================================================
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
@@ -214,50 +313,6 @@ async def send_tg_message(chat_id: str, text_html: str, reply_markup: dict = Non
         return {"ok": False, "description": str(e)}
 
 # =========================================================
-# FILE SENDER & AUTO-DELETE
-# =========================================================
-async def auto_delete_task(chat_id: int, msg_ids: list, delay: int):
-    await asyncio.sleep(delay)
-    try:
-        await app.delete_messages(chat_id=chat_id, message_ids=msg_ids)
-        await app.send_message(chat_id=chat_id, text="🗑️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත චිත්‍රපටය Chat එකෙන් ඉවත් කරන ලදී.</b>")
-    except Exception:
-        pass
-
-async def deliver_movie_file(chat_id: int, message_id: int, is_vip: bool = False):
-    delay = VIP_USER_DELETE_DURATION if is_vip else FREE_USER_DELETE_DURATION
-    time_label = "පැය 24කින්" if is_vip else "පැය 12කින්"
-
-    try:
-        await files_col.update_one({"message_id": int(message_id)}, {"$inc": {"download_count": 1}})
-    except Exception:
-        pass
-
-    warn_text = (
-        "⚡ <b>Auto-Download Started:</b>\n\n"
-        f"⚠️ මෙම චිත්‍රපටය තවත් <b>{time_label}</b> Chat එකෙන් ඉවත් වේ.\n"
-        "📥 Device එකට Save කරගැනීමට වීඩියෝවේ Menu එකෙන් <b>'Save to Downloads'</b> දෙන්න.\n"
-        "<i>(Save කළ පසු Chat එකෙන් මැකුණද ඔබගේ Phone එකෙහි සුරක්ෂිතව පවතී)</i>"
-    )
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-    payload = {"chat_id": int(chat_id), "from_chat_id": str(STORAGE_CHANNEL_RAW), "message_id": int(message_id)}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as resp:
-                res = await resp.json()
-                if res.get("ok"):
-                    sent_id = res["result"]["message_id"]
-                    warn_msg = await app.send_message(chat_id=chat_id, text=warn_text)
-                    asyncio.create_task(auto_delete_task(chat_id, [sent_id, warn_msg.id], delay))
-                    return True
-    except Exception:
-        pass
-
-    await app.send_message(chat_id=chat_id, text="❌ <b>මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.</b>")
-    return False
-
-# =========================================================
 # BACKUP CHANNEL DYNAMIC INVITE LINK BUILDER
 # =========================================================
 async def get_backup_link():
@@ -284,7 +339,7 @@ async def get_backup_link():
     return f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}"
 
 # =========================================================
-# VIP CHECK & ACCESS CONTROL
+# ACCESS CONTROL
 # =========================================================
 async def is_vip_user(user_id: int) -> bool:
     try:
@@ -326,11 +381,9 @@ async def get_fsub_markup(param: str = "") -> InlineKeyboardMarkup:
     btns = []
     if MAIN_CHANNEL:
         btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}")])
-    
     if BACKUP_CHANNEL:
         b_link = await get_backup_link()
         btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=b_link)])
-        
     btns.append([InlineKeyboardButton("🔄 Verify & Unlock", callback_data=f"verify_{param}" if param else "verify_root")])
     return InlineKeyboardMarkup(btns)
 
@@ -353,13 +406,12 @@ VIP_DETAILS_TEXT = (
 )
 
 # =========================================================
-# MOVIE CLEANER & OMDB MATCHER
+# MOVIE CLEANER & OMDB METADATA
 # =========================================================
 def clean_movie_title(raw_name: str):
     name = os.path.splitext(raw_name)[0]
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", name)
     year = year_match.group(1) if year_match else None
-    
     if year:
         name = name.replace(year, " ")
 
@@ -445,7 +497,7 @@ async def create_storage_preview(client: Client, message: Message):
     print(f"✅ Generated Control Preview for: {file_name}")
 
 # =========================================================
-# UNIVERSAL MESSAGE DISPATCHER
+# UNIVERSAL MESSAGE DISPATCHER (MAIN BOT)
 # =========================================================
 @app.on_message()
 async def universal_message_handler(client: Client, message: Message):
@@ -453,14 +505,14 @@ async def universal_message_handler(client: Client, message: Message):
         return
 
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
-    
-    # 1. STORAGE CHANNEL UPLOADS
+
+    # Storage Channel Uploads
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
-    # 2. PRIVATE CHATS
+    # Private Chats
     chat_type_val = str(getattr(message.chat.type, "value", message.chat.type)).lower()
     if "private" in chat_type_val:
         text = message.text or ""
@@ -514,10 +566,11 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 return
 
+            # Direct fallback if called in Main Bot
             if param.startswith("vipfile_"):
                 mid = int(param.split("_")[1])
                 await message.reply_text("👑 <b>VIP Direct File:</b>")
-                await deliver_movie_file(user_id, mid, is_vip=True)
+                asyncio.create_task(deliver_file_bot_movie(user_id, mid, is_vip=True))
                 return
 
             if param.startswith("tok1_"):
@@ -532,7 +585,7 @@ async def universal_message_handler(client: Client, message: Message):
             if param.startswith("tok2_"):
                 mid = int(param.split("_")[2])
                 await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:</b>")
-                await deliver_movie_file(user_id, mid, is_vip=False)
+                asyncio.create_task(deliver_file_bot_movie(user_id, mid, is_vip=False))
                 return
 
             if param.startswith("buy_"):
@@ -546,7 +599,6 @@ async def universal_message_handler(client: Client, message: Message):
                     await message.reply_text(f"⚠️ Stars Error: <code>{err}</code>")
                 return
 
-            # FORCE SUB VALIDATION FOR ALL CHANNELS
             if not await check_access(user_id):
                 await message.reply_text(
                     "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
@@ -577,16 +629,17 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
     global BOT_USERNAME
     data = callback.data
     user_id = callback.from_user.id
+    target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
     if not BOT_USERNAME:
         me = await client.get_me()
         BOT_USERNAME = me.username
 
-    # ACTION 1: POST TO MAIN CHANNEL (CLICKED INSIDE STORAGE)
+    # ACTION 1: POST TO MAIN CHANNEL
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
-        
+
         main_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
             [
@@ -594,53 +647,43 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
             ]
         ])
-        
+
         target = MAIN_CHANNEL
         try:
             if callback.message.photo:
-                await client.send_photo(
-                    chat_id=target,
-                    photo=callback.message.photo.file_id,
-                    caption=caption,
-                    reply_markup=main_markup
-                )
+                await client.send_photo(chat_id=target, photo=callback.message.photo.file_id, caption=caption, reply_markup=main_markup)
             else:
-                await client.send_message(
-                    chat_id=target,
-                    text=caption,
-                    reply_markup=main_markup
-                )
+                await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
         except Exception as e:
-            print(f"Main Send Error: {e}")
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL (CLICKED INSIDE STORAGE)
+    # ACTION 2: POST TO VIP CHANNEL
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
-        
+
         clean_caption = re.sub(r"👇.*", "", caption, flags=re.DOTALL).strip()
         vip_caption = f"{clean_caption}\n\n👑 <b>VIP Direct File:</b> දැන්වීම් නොමැතිව download කරගන්න 👇"
-        
+
         vip_markup = {
             "inline_keyboard": [
-                [{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"}]
+                [{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{target_delivery_bot}?start=vipfile_{msg_id}"}]
             ]
         }
-        
+
         target_vip = str(VIP_CHANNEL_RAW).strip()
         sent = False
         err_desc = ""
-        
+
         if callback.message.photo:
             res = await send_tg_photo_fileid(target_vip, callback.message.photo.file_id, vip_caption, vip_markup)
             if res.get("ok"):
                 sent = True
             else:
                 err_desc = res.get("description", "")
-        
+
         if not sent:
             res = await send_tg_message(target_vip, vip_caption, vip_markup)
             if res.get("ok"):
@@ -655,7 +698,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ VIP Fail: {err_desc[:100]}", show_alert=True)
         return
 
-    # USER VERIFY CALLBACK (JOIN CHECK)
+    # USER VERIFY CALLBACK
     if data.startswith("verify_"):
         await callback.answer()
         param = data.replace("verify_", "")
@@ -738,7 +781,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         return
 
 # =========================================================
-# TELEGRAM STARS RAW PRECHECKOUT & SUCCESS
+# TELEGRAM STARS SUCCESS
 # =========================================================
 @app.on_raw_update()
 async def handle_precheckout(client: Client, update, users, chats):
@@ -752,11 +795,15 @@ payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_pay
 @app.on_message(payment_filter)
 async def handle_payment_success(client: Client, message: Message):
     payload = message.successful_payment.invoice_payload
+    target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
     if payload.startswith("single_"):
         mid = int(payload.split("_")[1])
-        await message.reply_text("🎉 <b>Stars ගෙවීම සාර්ථකයි!</b> මෙන්න Movie එක:")
-        await deliver_movie_file(message.chat.id, mid, is_vip=True)
+        dl_link = f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}"
+        await message.reply_text(
+            "🎉 <b>Stars ගෙවීම සාර්ථකයි!</b>\n\nපහත Button එකෙන් Direct File එක ලබාගන්න 👇",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie File", url=dl_link)]])
+        )
 
     elif payload == "vip_sub":
         user_id = message.from_user.id
@@ -773,6 +820,21 @@ async def handle_payment_success(client: Client, message: Message):
 # =========================================================
 # SERVER INIT & RUNNER
 # =========================================================
+async def setup_file_bot_webhook():
+    if FILE_BOT_TOKEN and BASE_URL:
+        webhook_url = f"{BASE_URL}/filebot_webhook"
+        set_url = f"https://api.telegram.org/bot{FILE_BOT_TOKEN}/setWebhook?url={webhook_url}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(set_url) as resp:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        print(f"🔗 File Bot Webhook Linked: {webhook_url}")
+                    else:
+                        print(f"⚠️ Webhook Warning: {data.get('description')}")
+        except Exception as e:
+            print(f"Webhook Exception: {e}")
+
 async def main():
     global BOT_USERNAME
     await app.start()
@@ -787,6 +849,8 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     print(f"🌐 Web Engine Live on port {PORT}")
+
+    await setup_file_bot_webhook()
 
     await idle()
     await app.stop()
