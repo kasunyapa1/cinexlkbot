@@ -12,7 +12,8 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery
+    CallbackQuery,
+    LabeledPrice
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -73,11 +74,10 @@ BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 PRIMARY_AD_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
 PORT = int(os.environ.get("PORT", "8080"))
 
-# Auto-Delete Durations (Free: 12 Hours = 43200s, VIP: 24 Hours = 86400s)
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
-# Pyrogram Clients
+# Clients
 main_bot = Client("main_controller", api_id=API_ID, api_hash=API_HASH, bot_token=MAIN_BOT_TOKEN, workers=16)
 file_bot = Client("file_deliverer", api_id=API_ID, api_hash=API_HASH, bot_token=FILE_BOT_TOKEN, workers=16)
 
@@ -172,8 +172,8 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
     url = f"https://api.telegram.org/bot{MAIN_BOT_TOKEN}/sendInvoice"
     body = {
         "chat_id": int(chat_id),
-        "title": str(title),
-        "description": str(description),
+        "title": str(title)[:32],
+        "description": str(description)[:255],
         "payload": str(payload),
         "currency": "XTR",
         "prices": json.dumps([{"label": str(title)[:30], "amount": int(stars)}]),
@@ -500,10 +500,30 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
 
+            # 1. VIP DETAILS
             if param in ["buyvip", "vip", "buystar_vip"]:
                 await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 return
 
+            # 2. INSTANT STARS PURCHASE (PRIORITY OVER FSUB - ALWAYS OPENS INVOICE)
+            if param.startswith("buy_"):
+                mid = param.split("_")[1]
+                f_doc = await files_col.find_one({"message_id": int(mid)})
+                m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
+                clean_t = clean_movie_title(m_title)[0]
+
+                ok, err = await send_tg_invoice(
+                    chat_id=user_id,
+                    title=f"⚡ {clean_t[:25]}",
+                    description=f"{clean_t} චිත්‍රපටය Telegram Stars හරහා ක්ෂණිකව ලබාගැනීමට.",
+                    payload=f"single_{mid}",
+                    stars=SINGLE_STAR_PRICE
+                )
+                if not ok:
+                    await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
+                return
+
+            # 3. AD STEP 1 PASS
             if param.startswith("tok1_"):
                 mid = param.split("_")[2]
                 step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
@@ -513,14 +533,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
-            if param.startswith("buy_"):
-                mid = param.split("_")[1]
-                ok, err = await send_tg_invoice(user_id, "⚡ Direct Movie File", "දැන්වීම් නොමැතිව direct Telegram file එක ලබාගැනීමට.", f"single_{mid}", SINGLE_STAR_PRICE)
-                if not ok:
-                    await message.reply_text(f"⚠️ Stars Error: <code>{err}</code>")
-                return
-
-            # Force Sub Check
+            # 4. FORCE SUB VALIDATION FOR FREE AD USERS
             if not await check_access(user_id):
                 await message.reply_text(
                     "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
@@ -528,6 +541,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
+            # 5. AD STEP 1 ENTRY
             if param.startswith("adstep1_"):
                 mid = param.split("_")[1]
                 step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
@@ -575,7 +589,7 @@ async def main_bot_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # Post to VIP Channel (Redirects directly to File Bot)
+    # Post to VIP Channel
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -639,7 +653,7 @@ async def main_bot_callback_handler(client: Client, callback: CallbackQuery):
     # VIP Stars / Bank
     if data == "pay_vip_stars":
         await callback.answer()
-        ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Access (No Ads)", "vip_sub", VIP_STAR_PRICE)
+        ok, err = await send_tg_invoice(user_id, "👑 VIP Pass (30 Days)", "Cinex LK VIP Pass 30 Days Access", "vip_sub", VIP_STAR_PRICE)
         if not ok:
             await callback.message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
         return
