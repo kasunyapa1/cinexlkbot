@@ -18,18 +18,10 @@ from pyrogram.types import (
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
-def parse_target(val: str):
+def clean_channel_id(val: str) -> str:
     if not val:
         return ""
-    val = str(val).strip()
-    if val.startswith("-100") or val.startswith("-") or val.isdigit():
-        try:
-            return int(val)
-        except ValueError:
-            return val
-    if not val.startswith("@"):
-        return f"@{val}"
-    return val
+    return str(val).replace("-100", "").replace("-", "").strip()
 
 # =========================================================
 # CONFIGURATIONS
@@ -45,12 +37,9 @@ MAIN_BOT_USERNAME = os.environ.get("BOT_USERNAME", "").replace("@", "").strip()
 MONGO_URI = os.environ.get("MONGO_URI", "").strip()
 
 STORAGE_CHANNEL_RAW = os.environ.get("STORAGE_CHANNEL", "-1004413765578").strip()
-STORAGE_CHANNEL = parse_target(STORAGE_CHANNEL_RAW)
 VIP_CHANNEL_RAW = os.environ.get("VIP_CHANNEL", "-1004387584375").strip()
-VIP_CHANNEL = parse_target(VIP_CHANNEL_RAW)
-MAIN_CHANNEL = parse_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
+MAIN_CHANNEL_RAW = os.environ.get("MAIN_CHANNEL", "@cinexlk").strip()
 BACKUP_CHANNEL_RAW = os.environ.get("BACKUP_CHANNEL", "-1003901762623").strip()
-BACKUP_CHANNEL = parse_target(BACKUP_CHANNEL_RAW)
 BACKUP_CHANNEL_LINK = os.environ.get("BACKUP_CHANNEL_LINK", "").strip()
 
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
@@ -77,6 +66,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
+# In-Memory Sessions to prevent SQLite locks on Cloud
 main_bot = Client(
     "main_ctrl_session",
     api_id=API_ID,
@@ -101,7 +91,7 @@ vip_users_col = db_client["MovieDB"]["vip_users"]
 bot_users_col = db_client["MovieDB"]["bot_users"]
 manual_orders_col = db_client["MovieDB"]["manual_orders"]
 
-STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
+STORAGE_CLEAN = clean_channel_id(STORAGE_CHANNEL_RAW)
 CACHED_BACKUP_LINK = BACKUP_CHANNEL_LINK
 
 # =========================================================
@@ -297,7 +287,7 @@ async def get_backup_link():
     except Exception:
         pass
 
-    return f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}"
+    return f"https://t.me/{str(MAIN_CHANNEL_RAW).replace('@', '')}"
 
 # =========================================================
 # FSUB & VIP HELPERS
@@ -329,8 +319,8 @@ async def check_access(user_id: int) -> bool:
         rec = await bot_users_col.find_one({"user_id": user_id})
         if rec and rec.get("fsub_verified"):
             return True
-        in_main = await is_member(MAIN_CHANNEL, user_id)
-        in_back = await is_member(BACKUP_CHANNEL, user_id)
+        in_main = await is_member(MAIN_CHANNEL_RAW, user_id)
+        in_back = await is_member(BACKUP_CHANNEL_RAW, user_id)
         if in_main and in_back:
             await bot_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "fsub_verified": True}}, upsert=True)
             return True
@@ -340,9 +330,9 @@ async def check_access(user_id: int) -> bool:
 
 async def get_fsub_markup(param: str = "") -> InlineKeyboardMarkup:
     btns = []
-    if MAIN_CHANNEL:
-        btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}")])
-    if BACKUP_CHANNEL:
+    if MAIN_CHANNEL_RAW:
+        btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL_RAW).replace('@', '')}")])
+    if BACKUP_CHANNEL_RAW:
         b_link = await get_backup_link()
         btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=b_link)])
     btns.append([InlineKeyboardButton("🔄 Verify & Unlock", callback_data=f"verify_{param}" if param else "verify_root")])
@@ -416,6 +406,8 @@ async def create_storage_preview(client: Client, message: Message):
     size_mb = round(media.file_size / (1024 * 1024), 2)
     msg_id = message.id
 
+    print(f"🎬 [PROCESSING UPLOAD] ID: {msg_id} | Name: {file_name}", flush=True)
+
     await files_col.update_one(
         {"message_id": msg_id},
         {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
@@ -448,21 +440,29 @@ async def create_storage_preview(client: Client, message: Message):
 
     try:
         await client.send_photo(chat_id=message.chat.id, photo=poster_url, caption=caption, reply_markup=preview_markup)
-    except Exception:
+    except Exception as e:
+        print(f"Photo send error: {e}, falling back to text", flush=True)
         await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
-    print(f"✅ Preview Ready in Storage: {file_name}", flush=True)
+        
+    print(f"✅ [PREVIEW POSTED] Successfully posted control preview to Storage Channel!", flush=True)
 
+# UNIVERSAL CATCH-ALL FOR MESSAGES AND CHANNEL POSTS
 @main_bot.on_message()
 async def main_bot_message_dispatcher(client: Client, message: Message):
     if not message.chat:
         return
 
-    chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
-    if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
+    chat_id_str = str(message.chat.id)
+    chat_clean = clean_channel_id(chat_id_str)
+
+    # 1. STORAGE CHANNEL UPLOAD DETECTION
+    if chat_clean == STORAGE_CLEAN or chat_id_str == STORAGE_CHANNEL_RAW:
+        print(f"📦 [STORAGE DETECTED] Event in Storage Channel! ID: {message.id}", flush=True)
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
+    # 2. PRIVATE USER CHATS
     if message.chat.type == ChatType.PRIVATE:
         text = (message.text or "").strip()
         user_id = message.from_user.id if message.from_user else 0
@@ -510,12 +510,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
 
-            # 1. VIP Info
-            if param in ["buyvip", "vip", "buystar_vip"]:
-                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
-                return
-
-            # 2. Instant Stars Purchase (Immediate Invoice)
+            # Instant Stars Purchase
             if param.startswith("buy_"):
                 wait_m = await message.reply_text("⏳ <b>ඉන්වොයිසිය සකසමින් පවතී...</b>")
                 mid = param.split("_")[1]
@@ -535,7 +530,10 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                     await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
                 return
 
-            # 3. Ad Step 1 Pass
+            if param in ["buyvip", "vip", "buystar_vip"]:
+                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
+                return
+
             if param.startswith("tok1_"):
                 mid = param.split("_")[2]
                 step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}"
@@ -545,7 +543,6 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
-            # 4. Force Sub Validation
             if not await check_access(user_id):
                 await message.reply_text(
                     "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
@@ -553,7 +550,6 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
-            # 5. Ad Step 1 Entry
             if param.startswith("adstep1_"):
                 mid = param.split("_")[1]
                 step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
@@ -589,7 +585,7 @@ async def main_bot_callback_handler(client: Client, callback: CallbackQuery):
             ]
         ])
 
-        target = MAIN_CHANNEL
+        target = MAIN_CHANNEL_RAW
         try:
             if callback.message.photo:
                 await client.send_photo(chat_id=target, photo=callback.message.photo.file_id, caption=caption, reply_markup=main_markup)
@@ -775,7 +771,7 @@ async def file_bot_message_dispatcher(client: Client, message: Message):
         await message.reply_text(
             "👋 <b>Cinex LK Dedicated File Delivery System</b>\n\n"
             "චිත්‍රපට ලබාගැනීමට අපගේ ප්‍රධාන නාලිකාව හා සම්බන්ධ වන්න:\n"
-            f"📢 @{str(MAIN_CHANNEL).replace('@', '')}"
+            f"📢 @{str(MAIN_CHANNEL_RAW).replace('@', '')}"
         )
 
 # =========================================================
