@@ -66,7 +66,6 @@ PORT = int(os.environ.get("PORT", "8080"))
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
-# In-Memory Sessions to prevent SQLite locks on Cloud
 main_bot = Client(
     "main_ctrl_session",
     api_id=API_ID,
@@ -219,7 +218,7 @@ async def send_tg_message(chat_id: str, text_html: str, reply_markup: dict = Non
         return {"ok": False, "description": str(e)}
 
 # =========================================================
-# FILE DELIVERER
+# FILE DELIVERER (FILE BOT)
 # =========================================================
 async def auto_delete_task(chat_id: int, msg_ids: list, delay: int):
     await asyncio.sleep(delay)
@@ -395,9 +394,9 @@ async def fetch_metadata(raw_name: str):
     return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
-# BOT 1: MAIN CONTROLLER BOT HANDLERS
+# BOT 1: STORAGE PROCESSOR
 # =========================================================
-async def create_storage_preview(client: Client, message: Message):
+async def process_storage_upload(client: Client, message: Message):
     media = message.document or message.video
     if not media:
         return
@@ -406,7 +405,7 @@ async def create_storage_preview(client: Client, message: Message):
     size_mb = round(media.file_size / (1024 * 1024), 2)
     msg_id = message.id
 
-    print(f"🎬 [PROCESSING UPLOAD] ID: {msg_id} | Name: {file_name}", flush=True)
+    print(f"🎬 [PROCESSING STORAGE UPLOAD] ID: {msg_id} | Name: {file_name}", flush=True)
 
     await files_col.update_one(
         {"message_id": msg_id},
@@ -444,9 +443,22 @@ async def create_storage_preview(client: Client, message: Message):
         print(f"Photo send error: {e}, falling back to text", flush=True)
         await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
         
-    print(f"✅ [PREVIEW POSTED] Successfully posted control preview to Storage Channel!", flush=True)
+    print(f"✅ [STORAGE PREVIEW READY] Posted controls for ID {msg_id}", flush=True)
 
-# UNIVERSAL CATCH-ALL FOR MESSAGES AND CHANNEL POSTS
+# 1. CHANNEL POST LISTENER (Broadcast Channels)
+@main_bot.on_channel_post()
+async def main_bot_channel_post_handler(client: Client, message: Message):
+    if not message.chat:
+        return
+    chat_id_str = str(message.chat.id)
+    chat_clean = clean_channel_id(chat_id_str)
+
+    if chat_clean == STORAGE_CLEAN or chat_id_str == STORAGE_CHANNEL_RAW:
+        print(f"📦 [STORAGE CHANNEL POST] Event captured! Msg ID: {message.id}", flush=True)
+        if message.document or message.video:
+            asyncio.create_task(process_storage_upload(client, message))
+
+# 2. PRIVATE CHAT & REGULAR MESSAGE LISTENER
 @main_bot.on_message()
 async def main_bot_message_dispatcher(client: Client, message: Message):
     if not message.chat:
@@ -455,14 +467,13 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
     chat_id_str = str(message.chat.id)
     chat_clean = clean_channel_id(chat_id_str)
 
-    # 1. STORAGE CHANNEL UPLOAD DETECTION
+    # In case the Storage Channel triggers on_message
     if chat_clean == STORAGE_CLEAN or chat_id_str == STORAGE_CHANNEL_RAW:
-        print(f"📦 [STORAGE DETECTED] Event in Storage Channel! ID: {message.id}", flush=True)
+        print(f"📦 [STORAGE MESSAGE] Event captured! Msg ID: {message.id}", flush=True)
         if message.document or message.video:
-            asyncio.create_task(create_storage_preview(client, message))
+            asyncio.create_task(process_storage_upload(client, message))
         return
 
-    # 2. PRIVATE USER CHATS
     if message.chat.type == ChatType.PRIVATE:
         text = (message.text or "").strip()
         user_id = message.from_user.id if message.from_user else 0
@@ -510,7 +521,12 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
 
-            # Instant Stars Purchase
+            # 1. VIP Info
+            if param in ["buyvip", "vip", "buystar_vip"]:
+                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
+                return
+
+            # 2. Instant Stars Purchase (Immediate Invoice)
             if param.startswith("buy_"):
                 wait_m = await message.reply_text("⏳ <b>ඉන්වොයිසිය සකසමින් පවතී...</b>")
                 mid = param.split("_")[1]
@@ -530,10 +546,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                     await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
                 return
 
-            if param in ["buyvip", "vip", "buystar_vip"]:
-                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
-                return
-
+            # 3. Ad Step 1 Pass
             if param.startswith("tok1_"):
                 mid = param.split("_")[2]
                 step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}"
@@ -543,6 +556,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
+            # 4. Force Sub Validation
             if not await check_access(user_id):
                 await message.reply_text(
                     "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
@@ -550,6 +564,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
+            # 5. Ad Step 1 Entry
             if param.startswith("adstep1_"):
                 mid = param.split("_")[1]
                 step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
