@@ -70,14 +70,13 @@ BANK_DETAILS = os.environ.get(
     "🏢 <b>Branch:</b> Colombo"
 )
 
-BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
+BASE_URL = os.environ.get("BASE_URL", "https://cinexlkbot-lcfv.onrender.com").rstrip("/")
 PRIMARY_AD_LINK = os.environ.get("MONETAG_STREAM_LINK", os.environ.get("ADSTERRA_DIRECT_LINK", "https://google.com")).strip()
 PORT = int(os.environ.get("PORT", "8080"))
 
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
-# Clients (In-Memory to prevent SQLite lockups on container deploy)
 main_bot = Client(
     "main_ctrl_session",
     api_id=API_ID,
@@ -96,7 +95,6 @@ file_bot = Client(
     workers=16
 )
 
-# Database
 db_client = AsyncIOMotorClient(MONGO_URI)
 files_col = db_client["MovieDB"]["files"]
 vip_users_col = db_client["MovieDB"]["vip_users"]
@@ -231,7 +229,7 @@ async def send_tg_message(chat_id: str, text_html: str, reply_markup: dict = Non
         return {"ok": False, "description": str(e)}
 
 # =========================================================
-# FILE DELIVERER (USES FILE_BOT_TOKEN)
+# FILE DELIVERER
 # =========================================================
 async def auto_delete_task(chat_id: int, msg_ids: list, delay: int):
     await asyncio.sleep(delay)
@@ -268,11 +266,12 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
                     warn_msg = await file_bot.send_message(chat_id=chat_id, text=warn_text)
                     asyncio.create_task(auto_delete_task(chat_id, [sent_id, warn_msg.id], delay))
                     return True
-    except Exception:
-        pass
-
-    await file_bot.send_message(chat_id=chat_id, text="❌ <b>මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.</b>")
-    return False
+                else:
+                    await file_bot.send_message(chat_id=chat_id, text=f"❌ <b>Delivery Failed:</b> {res.get('description')}")
+                    return False
+    except Exception as e:
+        await file_bot.send_message(chat_id=chat_id, text=f"❌ <b>Error:</b> {e}")
+        return False
 
 # =========================================================
 # BACKUP CHANNEL DYNAMIC LINK
@@ -453,20 +452,17 @@ async def create_storage_preview(client: Client, message: Message):
         await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
     print(f"✅ Preview Ready in Storage: {file_name}", flush=True)
 
-# Main Bot: General Message Catch-All
 @main_bot.on_message()
 async def main_bot_message_dispatcher(client: Client, message: Message):
     if not message.chat:
         return
 
-    # 1. Storage Channel Listener
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
-    # 2. Private Chats
     if message.chat.type == ChatType.PRIVATE:
         text = (message.text or "").strip()
         user_id = message.from_user.id if message.from_user else 0
@@ -514,8 +510,14 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
 
-            # Instant Stars Purchase
+            # 1. VIP Info
+            if param in ["buyvip", "vip", "buystar_vip"]:
+                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
+                return
+
+            # 2. Instant Stars Purchase (Immediate Invoice)
             if param.startswith("buy_"):
+                wait_m = await message.reply_text("⏳ <b>ඉන්වොයිසිය සකසමින් පවතී...</b>")
                 mid = param.split("_")[1]
                 f_doc = await files_col.find_one({"message_id": int(mid)})
                 m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
@@ -528,23 +530,22 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                     payload=f"single_{mid}",
                     stars=SINGLE_STAR_PRICE
                 )
+                await wait_m.delete()
                 if not ok:
                     await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
                 return
 
-            if param in ["buyvip", "vip", "buystar_vip"]:
-                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
-                return
-
+            # 3. Ad Step 1 Pass
             if param.startswith("tok1_"):
                 mid = param.split("_")[2]
-                step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
+                step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}"
                 await message.reply_text(
                     "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
                 )
                 return
 
+            # 4. Force Sub Validation
             if not await check_access(user_id):
                 await message.reply_text(
                     "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
@@ -552,9 +553,10 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 )
                 return
 
+            # 5. Ad Step 1 Entry
             if param.startswith("adstep1_"):
                 mid = param.split("_")[1]
-                step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
+                step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
                 await message.reply_text(
                     "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
@@ -646,7 +648,7 @@ async def main_bot_callback_handler(client: Client, callback: CallbackQuery):
             if param and param != "root":
                 if param.startswith("adstep1_"):
                     mid = param.split("_")[1]
-                    step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
+                    step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
                     await client.send_message(user_id, "🎬 <b>Step 1 of 2:</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
                 elif param in ["buyvip", "vip", "buystar_vip"]:
                     await client.send_message(user_id, VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
@@ -756,7 +758,7 @@ async def file_bot_message_dispatcher(client: Client, message: Message):
         parts = text.split(maxsplit=1)
         param = parts[1].strip() if len(parts) > 1 else ""
 
-        # VIP Instant File (24h Delete)
+        # VIP File (24h Delete)
         if param.startswith("vipfile_"):
             mid = int(param.split("_")[1])
             await message.reply_text("👑 <b>Cinex LK VIP File:</b> Direct File එක එවමින් පවතී...")
@@ -791,10 +793,8 @@ async def run_server():
 async def main():
     global MAIN_BOT_USERNAME, FILE_BOT_USERNAME
 
-    # 1. Background Web Server
     await run_server()
 
-    # 2. Start Both Clients
     await main_bot.start()
     me_main = await main_bot.get_me()
     MAIN_BOT_USERNAME = me_main.username
@@ -809,7 +809,6 @@ async def main():
         FILE_BOT_USERNAME = MAIN_BOT_USERNAME
         print("ℹ️ Running in Single-Bot Mode", flush=True)
 
-    # 3. Idle to keep polling alive
     await idle()
 
     await main_bot.stop()
