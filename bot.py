@@ -15,22 +15,8 @@ from pyrogram.types import (
     Message,
     CallbackQuery
 )
-from pyrogram.raw.types import UpdateNewChannelMessage
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
-
-def parse_target(val: str):
-    if not val:
-        return ""
-    val = str(val).strip()
-    if val.startswith("-100") or val.startswith("-") or val.isdigit():
-        try:
-            return int(val)
-        except ValueError:
-            return val
-    if not val.startswith("@"):
-        return f"@{val}"
-    return val
 
 def clean_id(val) -> str:
     return str(val).replace("-100", "").replace("-", "").strip()
@@ -359,7 +345,7 @@ async def process_storage_message(message: Message):
     size_mb = round(media.file_size / (1024 * 1024), 2)
     msg_id = message.id
 
-    print(f"🎬 [STORAGE FILE DETECTED] Msg ID: {msg_id} | Name: {file_name}", flush=True)
+    print(f"🎬 [STORAGE DETECTED] Processing msg_id: {msg_id} | Name: {file_name}", flush=True)
 
     await files_col.update_one(
         {"message_id": msg_id},
@@ -393,147 +379,144 @@ async def process_storage_message(message: Message):
 
     try:
         await bot.send_photo(chat_id=message.chat.id, photo=poster_url, caption=caption, reply_markup=preview_markup)
-        print(f"✅ [SUCCESS] Storage Preview Created!", flush=True)
+        print(f"✅ Preview Photo Posted in Storage Channel for Msg ID: {msg_id}", flush=True)
     except Exception as e:
-        print(f"Photo send error: {e}, falling back to text", flush=True)
+        print(f"⚠️ Photo send failed ({e}), sending text preview instead...", flush=True)
         await bot.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
 
-# RAW UPDATE INTERCEPTOR (Never Misses a Broadcast Channel Post!)
-@bot.on_raw_update()
-async def raw_channel_listener(client: Client, update, users, chats):
-    if isinstance(update, UpdateNewChannelMessage):
-        raw_msg = update.message
-        chat_id_clean = str(getattr(raw_msg.peer_id, "channel_id", ""))
-        
-        # Check against Storage Channel ID
-        if chat_id_clean == STORAGE_CLEAN:
-            print(f"🎯 [RAW CHANNEL HIT] Captured Storage Upload! Msg ID: {raw_msg.id}", flush=True)
-            try:
-                full_msg = await bot.get_messages(chat_id=int(STORAGE_CHANNEL_RAW), message_ids=raw_msg.id)
-                if full_msg and (full_msg.document or full_msg.video):
-                    asyncio.create_task(process_storage_message(full_msg))
-            except Exception as e:
-                print(f"Error resolving full raw message: {e}", flush=True)
-
-# PRIVATE MESSAGES (USERS /START & VERIFICATION)
-@bot.on_message(filters.private)
-async def private_handler(client: Client, message: Message):
-    text = (message.text or "").strip()
-    user_id = message.from_user.id if message.from_user else 0
-    print(f"[BOT PRIVATE] User: {user_id} | Text: '{text}'", flush=True)
-
-    if text.startswith("/addvip"):
-        if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
-            return
-        args = text.split()
-        if len(args) < 2:
-            await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt;</code>")
-            return
-        try:
-            target_user_id = int(args[1].strip())
-        except ValueError:
-            await message.reply_text("❌ වැරදි User ID එකකි.")
-            return
-
-        expiry_date = datetime.utcnow() + timedelta(days=30)
-        await vip_users_col.update_one(
-            {"user_id": target_user_id},
-            {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
-            upsert=True
-        )
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-            payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as resp:
-                    res = await resp.json()
-                    if res.get("ok"):
-                        link = res["result"]["invite_link"]
-                        await client.send_message(
-                            chat_id=target_user_id,
-                            text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
-                        )
-                        await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.")
-                        return
-            await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
-        except Exception as e:
-            await message.reply_text(f"⚠️ Invite Error: {e}")
+# =========================================================
+# GLOBAL MESSAGE DISPATCHER (NO BLOCKING FILTERS)
+# =========================================================
+@bot.on_message()
+async def global_message_dispatcher(client: Client, message: Message):
+    if not message.chat:
         return
 
-    if text.startswith("/start"):
-        parts = text.split(maxsplit=1)
-        param = parts[1].strip() if len(parts) > 1 else ""
+    chat_id_clean = clean_id(message.chat.id)
 
-        # VIP Delivery
-        if param.startswith("vipfile_"):
-            mid = int(param.split("_")[1])
-            await message.reply_text("👑 <b>Cinex LK VIP File:</b> Direct File එක එවමින් පවතී...")
-            await deliver_movie_file(user_id, mid, is_vip=True)
-            return
+    # 1. STORAGE CHANNEL DETECTOR (Channel or Group)
+    if chat_id_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
+        if message.document or message.video:
+            asyncio.create_task(process_storage_message(message))
+        return
 
-        # Free Verified Delivery
-        if param.startswith("dl_"):
-            mid = int(param.split("_")[2])
-            await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b> මෙන්න ඔබගේ චිත්‍රපටය:")
-            await deliver_movie_file(user_id, mid, is_vip=False)
-            return
+    # 2. PRIVATE CHATS (USERS)
+    if message.chat.type == ChatType.PRIVATE:
+        text = (message.text or "").strip()
+        user_id = message.from_user.id if message.from_user else 0
 
-        # Stars Buy
-        if param.startswith("buy_"):
-            mid = param.split("_")[1]
-            f_doc = await files_col.find_one({"message_id": int(mid)})
-            m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
-            clean_t = clean_movie_title(m_title)[0]
+        if text.startswith("/addvip"):
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            args = text.split()
+            if len(args) < 2:
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt;</code>")
+                return
+            try:
+                target_user_id = int(args[1].strip())
+            except ValueError:
+                await message.reply_text("❌ වැරදි User ID එකකි.")
+                return
 
-            ok, err = await send_tg_invoice(
-                chat_id=user_id,
-                title=f"⚡ {clean_t[:25]}",
-                description=f"{clean_t} චිත්‍රපටය Telegram Stars හරහා ක්ෂණිකව ලබාගැනීමට.",
-                payload=f"single_{mid}",
-                stars=SINGLE_STAR_PRICE
+            expiry_date = datetime.utcnow() + timedelta(days=30)
+            await vip_users_col.update_one(
+                {"user_id": target_user_id},
+                {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+                upsert=True
             )
-            if not ok:
-                await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+                payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload) as resp:
+                        res = await resp.json()
+                        if res.get("ok"):
+                            link = res["result"]["invite_link"]
+                            await client.send_message(
+                                chat_id=target_user_id,
+                                text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
+                            )
+                            await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.")
+                            return
+                await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
+            except Exception as e:
+                await message.reply_text(f"⚠️ Invite Error: {e}")
             return
 
-        # VIP Info
-        if param in ["buyvip", "vip", "buystar_vip"]:
-            await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
-            return
+        if text.startswith("/start"):
+            parts = text.split(maxsplit=1)
+            param = parts[1].strip() if len(parts) > 1 else ""
 
-        # Ad Step 1 Pass
-        if param.startswith("tok1_"):
-            mid = param.split("_")[2]
-            step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}"
+            # VIP File Delivery
+            if param.startswith("vipfile_"):
+                mid = int(param.split("_")[1])
+                await message.reply_text("👑 <b>Cinex LK VIP File:</b> Direct File එක එවමින් පවතී...")
+                await deliver_movie_file(user_id, mid, is_vip=True)
+                return
+
+            # Free Verified Delivery
+            if param.startswith("dl_"):
+                mid = int(param.split("_")[2])
+                await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b> මෙන්න ඔබගේ චිත්‍රපටය:")
+                await deliver_movie_file(user_id, mid, is_vip=False)
+                return
+
+            # Stars Buy
+            if param.startswith("buy_"):
+                mid = param.split("_")[1]
+                f_doc = await files_col.find_one({"message_id": int(mid)})
+                m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
+                clean_t = clean_movie_title(m_title)[0]
+
+                ok, err = await send_tg_invoice(
+                    chat_id=user_id,
+                    title=f"⚡ {clean_t[:25]}",
+                    description=f"{clean_t} චිත්‍රපටය Telegram Stars හරහා ක්ෂණිකව ලබාගැනීමට.",
+                    payload=f"single_{mid}",
+                    stars=SINGLE_STAR_PRICE
+                )
+                if not ok:
+                    await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
+                return
+
+            # VIP Info
+            if param in ["buyvip", "vip", "buystar_vip"]:
+                await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
+                return
+
+            # Ad Step 1 Pass
+            if param.startswith("tok1_"):
+                mid = param.split("_")[2]
+                step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}"
+                await message.reply_text(
+                    "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
+                )
+                return
+
+            # Force Sub Check
+            if not await check_access(user_id):
+                await message.reply_text(
+                    "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
+                    reply_markup=await get_fsub_markup(param)
+                )
+                return
+
+            # Ad Step 1 Entry
+            if param.startswith("adstep1_"):
+                mid = param.split("_")[1]
+                step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
+                await message.reply_text(
+                    "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
+                )
+                return
+
             await message.reply_text(
-                "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
+                "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
+                "🔍 Movie එකේ නම එවන්න.\n"
+                "👑 VIP සාමාජිකත්වය: <code>/start vip</code>"
             )
-            return
-
-        # Force Sub Check
-        if not await check_access(user_id):
-            await message.reply_text(
-                "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
-                reply_markup=await get_fsub_markup(param)
-            )
-            return
-
-        # Ad Step 1 Entry
-        if param.startswith("adstep1_"):
-            mid = param.split("_")[1]
-            step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}"
-            await message.reply_text(
-                "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
-            )
-            return
-
-        await message.reply_text(
-            "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
-            "🔍 Movie එකේ නම එවන්න.\n"
-            "👑 VIP සාමාජිකත්වය: <code>/start vip</code>"
-        )
 
 @bot.on_callback_query()
 async def callback_handler(client: Client, callback: CallbackQuery):
@@ -577,7 +560,7 @@ async def callback_handler(client: Client, callback: CallbackQuery):
             [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}")]
         ])
 
-        target_vip = parse_target(VIP_CHANNEL_RAW)
+        target_vip = str(VIP_CHANNEL_RAW).strip()
         try:
             if callback.message.photo:
                 await client.send_photo(chat_id=target_vip, photo=callback.message.photo.file_id, caption=vip_caption, reply_markup=vip_markup)
@@ -658,7 +641,7 @@ async def callback_handler(client: Client, callback: CallbackQuery):
         await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
         return
 
-# Stars Payment Precheckout & Success
+# Stars Payment Success
 @bot.on_raw_update()
 async def handle_precheckout(client: Client, update, users, chats):
     if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
