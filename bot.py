@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import urllib.parse
 import aiohttp
 from pyrogram import Client, filters, idle
+from pyrogram.enums import ChatType
 from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -442,6 +443,9 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
     if not message.chat:
         return
 
+    chat_type_str = str(message.chat.type).lower()
+    is_private = (message.chat.type == ChatType.PRIVATE) or ("private" in chat_type_str)
+
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
 
     # Storage Channel Uploads Listener
@@ -451,9 +455,10 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
         return
 
     # Private Chats
-    if message.chat.type.value == "private":
+    if is_private:
         text = message.text or ""
         user_id = message.from_user.id if message.from_user else 0
+        print(f"[DEBUG MAIN BOT] Message from {user_id}: {text}")
 
         # /addvip
         if text.startswith("/addvip"):
@@ -504,7 +509,7 @@ async def main_bot_message_dispatcher(client: Client, message: Message):
                 await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 return
 
-            # 2. INSTANT STARS PURCHASE (PRIORITY OVER FSUB)
+            # 2. INSTANT STARS PURCHASE (NO FSUB BLOCK)
             if param.startswith("buy_"):
                 mid = param.split("_")[1]
                 f_doc = await files_col.find_one({"message_id": int(mid)})
@@ -736,31 +741,43 @@ async def handle_payment_success(client: Client, message: Message):
 # =========================================================
 # BOT 2: FILE DELIVERY BOT HANDLERS (SEPARATE BOT)
 # =========================================================
-@file_bot.on_message(filters.command("start") & filters.private)
-async def file_bot_start_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    parts = message.text.split(maxsplit=1)
-    param = parts[1].strip() if len(parts) > 1 else ""
-
-    # VIP Instant File (24 Hours Auto-Delete)
-    if param.startswith("vipfile_"):
-        mid = int(param.split("_")[1])
-        await message.reply_text("👑 <b>Cinex LK VIP File:</b> Direct File එක එවමින් පවතී...")
-        await deliver_file_bot_movie(user_id, mid, is_vip=True)
+@file_bot.on_message()
+async def file_bot_message_dispatcher(client: Client, message: Message):
+    if not message.chat:
         return
 
-    # Ad Gate Verified File (12 Hours Auto-Delete)
-    if param.startswith("dl_"):
-        mid = int(param.split("_")[2])
-        await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b> මෙන්න ඔබගේ චිත්‍රපටය:")
-        await deliver_file_bot_movie(user_id, mid, is_vip=False)
+    chat_type_str = str(message.chat.type).lower()
+    is_private = (message.chat.type == ChatType.PRIVATE) or ("private" in chat_type_str)
+    if not is_private:
         return
 
-    await message.reply_text(
-        "👋 <b>Cinex LK Dedicated File Delivery System</b>\n\n"
-        "චිත්‍රපට ලබාගැනීමට අපගේ ප්‍රධාන නාලිකාව හා සම්බන්ධ වන්න:\n"
-        f"📢 @{str(MAIN_CHANNEL).replace('@', '')}"
-    )
+    text = message.text or ""
+    user_id = message.from_user.id if message.from_user else 0
+    print(f"[DEBUG FILE BOT] Message from {user_id}: {text}")
+
+    if text.startswith("/start"):
+        parts = text.split(maxsplit=1)
+        param = parts[1].strip() if len(parts) > 1 else ""
+
+        # VIP Instant File (24 Hours Auto-Delete)
+        if param.startswith("vipfile_"):
+            mid = int(param.split("_")[1])
+            await message.reply_text("👑 <b>Cinex LK VIP File:</b> Direct File එක එවමින් පවතී...")
+            await deliver_file_bot_movie(user_id, mid, is_vip=True)
+            return
+
+        # Ad Gate Verified File (12 Hours Auto-Delete)
+        if param.startswith("dl_"):
+            mid = int(param.split("_")[2])
+            await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b> මෙන්න ඔබගේ චිත්‍රපටය:")
+            await deliver_file_bot_movie(user_id, mid, is_vip=False)
+            return
+
+        await message.reply_text(
+            "👋 <b>Cinex LK Dedicated File Delivery System</b>\n\n"
+            "චිත්‍රපට ලබාගැනීමට අපගේ ප්‍රධාන නාලිකාව හා සම්බන්ධ වන්න:\n"
+            f"📢 @{str(MAIN_CHANNEL).replace('@', '')}"
+        )
 
 # =========================================================
 # RUNNER INITIALIZATION
