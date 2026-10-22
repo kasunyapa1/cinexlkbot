@@ -40,9 +40,12 @@ MONGO_URI = os.environ.get("MONGO_URI", "")
 
 STORAGE_CHANNEL_RAW = os.environ.get("STORAGE_CHANNEL", "-1004413765578").strip()
 STORAGE_CHANNEL = parse_target(STORAGE_CHANNEL_RAW)
-VIP_CHANNEL = parse_target(os.environ.get("VIP_CHANNEL", "-1004387584375"))
+VIP_CHANNEL_RAW = os.environ.get("VIP_CHANNEL", "-1004387584375").strip()
+VIP_CHANNEL = parse_target(VIP_CHANNEL_RAW)
 MAIN_CHANNEL = parse_target(os.environ.get("MAIN_CHANNEL", "@cinexlk"))
-BACKUP_CHANNEL = parse_target(os.environ.get("BACKUP_CHANNEL", "-1003901762623"))
+BACKUP_CHANNEL_RAW = os.environ.get("BACKUP_CHANNEL", "-1003901762623").strip()
+BACKUP_CHANNEL = parse_target(BACKUP_CHANNEL_RAW)
+BACKUP_CHANNEL_LINK = os.environ.get("BACKUP_CHANNEL_LINK", "").strip()
 
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "").strip()
@@ -84,6 +87,7 @@ bot_users_col = db_client["MovieDB"]["bot_users"]
 manual_orders_col = db_client["MovieDB"]["manual_orders"]
 
 STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
+CACHED_BACKUP_LINK = BACKUP_CHANNEL_LINK
 
 # =========================================================
 # WEB SERVER & AD GATE
@@ -180,6 +184,34 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
     except Exception as e:
         return False, str(e)
 
+async def send_tg_photo_fileid(chat_id: str, file_id: str, caption_html: str, reply_markup: dict):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    data = {
+        "chat_id": str(chat_id),
+        "photo": file_id,
+        "caption": caption_html,
+        "parse_mode": "HTML",
+        "reply_markup": json.dumps(reply_markup)
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                return await resp.json()
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
+
+async def send_tg_message(chat_id: str, text_html: str, reply_markup: dict = None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": str(chat_id), "text": text_html, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                return await resp.json()
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
+
 # =========================================================
 # FILE SENDER & AUTO-DELETE
 # =========================================================
@@ -224,6 +256,34 @@ async def deliver_movie_file(chat_id: int, message_id: int, is_vip: bool = False
     return False
 
 # =========================================================
+# BACKUP CHANNEL DYNAMIC INVITE LINK BUILDER
+# =========================================================
+async def get_backup_link():
+    global CACHED_BACKUP_LINK
+    if CACHED_BACKUP_LINK:
+        return CACHED_BACKUP_LINK
+
+    target = str(BACKUP_CHANNEL_RAW).strip()
+    if not (target.startswith("-100") or target.startswith("-")):
+        # Public Username
+        CACHED_BACKUP_LINK = f"https://t.me/{target.replace('@', '')}"
+        return CACHED_BACKUP_LINK
+
+    # Private Channel: Generate via Telegram API
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={"chat_id": target}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    CACHED_BACKUP_LINK = res["result"]["invite_link"]
+                    return CACHED_BACKUP_LINK
+    except Exception:
+        pass
+
+    return f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}"
+
+# =========================================================
 # VIP CHECK & ACCESS CONTROL
 # =========================================================
 async def is_vip_user(user_id: int) -> bool:
@@ -266,8 +326,11 @@ async def get_fsub_markup(param: str = "") -> InlineKeyboardMarkup:
     btns = []
     if MAIN_CHANNEL:
         btns.append([InlineKeyboardButton("📢 Join Main Channel", url=f"https://t.me/{str(MAIN_CHANNEL).replace('@', '')}")])
+    
     if BACKUP_CHANNEL:
-        btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=f"https://t.me/{str(BACKUP_CHANNEL).replace('@', '')}")])
+        b_link = await get_backup_link()
+        btns.append([InlineKeyboardButton("🛡️ Join Backup Channel", url=b_link)])
+        
     btns.append([InlineKeyboardButton("🔄 Verify & Unlock", callback_data=f"verify_{param}" if param else "verify_root")])
     return InlineKeyboardMarkup(btns)
 
@@ -424,7 +487,7 @@ async def universal_message_handler(client: Client, message: Message):
             )
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-                payload = {"chat_id": str(VIP_CHANNEL), "member_limit": 1}
+                payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, json=payload) as resp:
                         res = await resp.json()
@@ -478,8 +541,12 @@ async def universal_message_handler(client: Client, message: Message):
                     await message.reply_text(f"⚠️ Stars Error: <code>{err}</code>")
                 return
 
+            # FORCE SUB VALIDATION FOR ALL CHANNELS
             if not await check_access(user_id):
-                await message.reply_text("🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර අපගේ Channels වලට Join වන්න:</b>", reply_markup=await get_fsub_markup(param))
+                await message.reply_text(
+                    "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
+                    reply_markup=await get_fsub_markup(param)
+                )
                 return
 
             if param.startswith("adstep1_"):
@@ -527,7 +594,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         target = MAIN_CHANNEL
         try:
             if callback.message.photo:
-                # Direct Photo File ID pass without re-downloading
                 await client.send_photo(
                     chat_id=target,
                     photo=callback.message.photo.file_id,
@@ -554,32 +620,38 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         clean_caption = re.sub(r"👇.*", "", caption, flags=re.DOTALL).strip()
         vip_caption = f"{clean_caption}\n\n👑 <b>VIP Direct File:</b> දැන්වීම් නොමැතිව download කරගන්න 👇"
         
-        vip_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚡ Instant Download (Direct File)", url=f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}")]
-        ])
+        vip_markup = {
+            "inline_keyboard": [
+                [{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{BOT_USERNAME}?start=vipfile_{msg_id}"}]
+            ]
+        }
         
-        target = VIP_CHANNEL
-        try:
-            if callback.message.photo:
-                await client.send_photo(
-                    chat_id=target,
-                    photo=callback.message.photo.file_id,
-                    caption=vip_caption,
-                    reply_markup=vip_markup
-                )
+        target_vip = str(VIP_CHANNEL_RAW).strip()
+        sent = False
+        err_desc = ""
+        
+        if callback.message.photo:
+            res = await send_tg_photo_fileid(target_vip, callback.message.photo.file_id, vip_caption, vip_markup)
+            if res.get("ok"):
+                sent = True
             else:
-                await client.send_message(
-                    chat_id=target,
-                    text=vip_caption,
-                    reply_markup=vip_markup
-                )
+                err_desc = res.get("description", "")
+        
+        if not sent:
+            res = await send_tg_message(target_vip, vip_caption, vip_markup)
+            if res.get("ok"):
+                sent = True
+            else:
+                if not err_desc:
+                    err_desc = res.get("description", "")
+
+        if sent:
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
-        except Exception as e:
-            print(f"VIP Send Error: {e}")
-            await callback.answer(f"❌ VIP Fail: {str(e)[:100]}", show_alert=True)
+        else:
+            await callback.answer(f"❌ VIP Fail: {err_desc[:100]}", show_alert=True)
         return
 
-    # USER VERIFY CALLBACK
+    # USER VERIFY CALLBACK (JOIN CHECK)
     if data.startswith("verify_"):
         await callback.answer()
         param = data.replace("verify_", "")
@@ -598,7 +670,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             else:
                 await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න.")
         else:
-            await callback.answer("❌ කරුණාකර Channels 2ටම Join වී Verify ඔබන්න.", show_alert=True)
+            await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
     # VIP STARS CALLBACK
@@ -685,7 +757,7 @@ async def handle_payment_success(client: Client, message: Message):
         await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry}}, upsert=True)
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json={"chat_id": str(VIP_CHANNEL), "member_limit": 1}) as resp:
+            async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
                 res = await resp.json()
                 if res.get("ok"):
                     link = res["result"]["invite_link"]
