@@ -133,11 +133,14 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     except Exception:
         pass
 
+    # Clear Sinhala User Instruction Message
     warn_text = (
-        "⚡ <b>Cinex LK Delivery:</b>\n\n"
-        f"⚠️ මෙම චිත්‍රපටය තවත් <b>{time_label}</b> Chat එකෙන් ඉවත් වේ.\n"
-        "📥 Device එකට Save කරගැනීමට වීඩියෝවේ Menu එකෙන් <b>'Save to Downloads'</b> දෙන්න.\n"
-        "<i>(Save කළ පසු Chat එකෙන් මැකුණද ඔබගේ Phone එකෙහි සුරක්ෂිතව පවතී)</i>"
+        "⚡ <b>Cinex LK Delivery Update:</b>\n\n"
+        f"⚠️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත මෙම චිත්‍රපටය තවත් {time_label} Chat එකෙන් ස්වයංක්‍රීයව මැකී යයි.</b>\n\n"
+        "📲 <b>Phone එකට Save කරගන්නා ආකාරය (අනිවාර්යයි):</b>\n"
+        "1. වීඩියෝව සම්පූර්ණයෙන්ම Download වූ පසු, වීඩියෝව උඩ ඇති <b>තිත් 3 (⋮)</b> ඔබන්න.\n"
+        "2. එහි ඇති <b>'Save to Downloads'</b> හෝ <b>'Save to Gallery'</b> තෝරන්න.\n\n"
+        "<i>(එසේ Save කළ පසු Chat එකෙන් මැකුණද චිත්‍රපටය ඔබගේ Phone එකෙහි ආරක්ෂිතව පවතී!)</i>"
     )
 
     url = f"https://api.telegram.org/bot{FILE_BOT_TOKEN}/copyMessage"
@@ -283,7 +286,6 @@ async def kick_user_from_vip_channel(user_id: int):
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
 
-# Telegram Stars (XTR) Direct JSON Invoice Sender
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     body = {
