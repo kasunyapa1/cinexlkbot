@@ -114,7 +114,7 @@ async def delete_file_bot_messages(chat_id: int, message_ids: list):
     payload = {"chat_id": chat_id, "message_ids": message_ids}
     try:
         async with aiohttp.ClientSession() as session:
-            await session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 pass
     except Exception:
         pass
@@ -211,7 +211,6 @@ SAME_PAGE_GATE_HTML = """
         }}, 1000);
 
         function openTelegram(e, bot, token) {{
-            // Direct protocol execution for instant desktop launch
             const tgProtocol = "tg://resolve?domain=" + bot + "&start=" + token;
             const webLink = "https://t.me/" + bot + "?start=" + token;
             window.location.href = tgProtocol;
