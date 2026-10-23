@@ -264,8 +264,28 @@ async def file_bot_webhook_handler(request):
     return web.Response(text="ok", status=200)
 
 # =========================================================
-# TELEGRAM RAW HTTP HELPERS
+# TELEGRAM RAW HTTP HELPERS & KICK LOGIC
 # =========================================================
+async def kick_user_from_vip_channel(user_id: int):
+    # 1. Ban & Unban quickly to remove user from private broadcast channel
+    url_ban = f"https://api.telegram.org/bot{BOT_TOKEN}/banChatMember"
+    url_unban = f"https://api.telegram.org/bot{BOT_TOKEN}/unbanChatMember"
+    payload = {"chat_id": str(VIP_CHANNEL_RAW), "user_id": int(user_id)}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(url_ban, json=payload, timeout=aiohttp.ClientTimeout(total=8))
+            await asyncio.sleep(0.5)
+            await session.post(url_unban, json=payload, timeout=aiohttp.ClientTimeout(total=8))
+    except Exception:
+        pass
+
+    # 2. Expire in Database immediately
+    await vip_users_col.update_one(
+        {"user_id": int(user_id)},
+        {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
+    )
+
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     body = {
@@ -520,6 +540,106 @@ async def universal_message_handler(client: Client, message: Message):
         user_id = message.from_user.id if message.from_user else 0
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
+        # /stats Command (ADMIN ONLY)
+        if text == "/stats":
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            
+            total_movies = await files_col.count_documents({})
+            total_vip = await vip_users_col.count_documents({"expiry_date": {"$gt": datetime.utcnow()}})
+            
+            pipeline = [{"$group": {"_id": None, "total_downloads": {"$sum": "$download_count"}}}]
+            agg = await files_col.aggregate(pipeline).to_list(length=1)
+            total_dl = agg[0]["total_downloads"] if agg else 0
+
+            stats_msg = (
+                "📊 <b>Cinex LK Storage & Bot Statistics:</b>\n\n"
+                f"🎬 <b>Total Movies in Storage:</b> <code>{total_movies}</code>\n"
+                f"📥 <b>Total Movie Downloads:</b> <code>{total_dl}</code>\n"
+                f"👑 <b>Active VIP Members:</b> <code>{total_vip}</code>\n\n"
+                f"📦 <i>Storage Channel ID:</i> <code>{STORAGE_CHANNEL_RAW}</code>"
+            )
+            await message.reply_text(stats_msg)
+            return
+
+        # /storage Command (ADMIN ONLY - List Recent 30 Movies)
+        if text == "/storage":
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+
+            total_movies = await files_col.count_documents({})
+            if total_movies == 0:
+                await message.reply_text("📂 <b>Storage Database එකෙහි Movies කිසිවක් හමු නොවීය.</b>")
+                return
+
+            recent_cursor = files_col.find({}).sort("_id", -1).limit(30)
+            recent_movies = await recent_cursor.to_list(length=30)
+
+            list_text = f"📂 <b>Storage Files List (Total: {total_movies} Movies)</b>\n\n"
+            for idx, doc in enumerate(recent_movies, 1):
+                clean_t = clean_movie_title(doc.get("file_name", "Movie"))[0]
+                mid = doc.get("message_id")
+                dl_count = doc.get("download_count", 0)
+                list_text += f"{idx}. <b>{html.escape(clean_t[:30])}</b> (ID: <code>{mid}</code> | 📥 {dl_count})\n"
+
+            if total_movies > 30:
+                list_text += f"\n<i>...සහ තවත් චිත්‍රපට {total_movies - 30}ක් ඇත.</i>"
+
+            await message.reply_text(list_text)
+            return
+
+        # /viplist Command (ADMIN ONLY - Shows Members + Individual Kick Buttons)
+        if text == "/viplist":
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+
+            now = datetime.utcnow()
+            active_vips = await vip_users_col.find({"expiry_date": {"$gt": now}}).sort("expiry_date", 1).to_list(length=100)
+
+            if not active_vips:
+                await message.reply_text("👑 <b>දැනට Active VIP සාමාජිකයන් කිසිවෙකු නොමැත.</b>")
+                return
+
+            vip_text = f"👑 <b>Active VIP Members List (Total: {len(active_vips)})</b>\n\n"
+            kick_buttons = []
+
+            for idx, v in enumerate(active_vips, 1):
+                v_uid = v.get("user_id")
+                joined_at = v.get("joined_at")
+                expiry_date = v.get("expiry_date")
+
+                joined_str = joined_at.strftime("%Y-%m-%d") if isinstance(joined_at, datetime) else "N/A"
+                expiry_str = expiry_date.strftime("%Y-%m-%d") if isinstance(expiry_date, datetime) else "N/A"
+                rem_days = (expiry_date - now).days if isinstance(expiry_date, datetime) else 0
+
+                vip_text += (
+                    f"{idx}. 👤 <b>User ID:</b> <code>{v_uid}</code>\n"
+                    f"   📅 <b>Joined:</b> <code>{joined_str}</code>\n"
+                    f"   ⏳ <b>Expires:</b> <code>{expiry_str}</code> (<b>{rem_days} Days Left</b>)\n\n"
+                )
+                kick_buttons.append([InlineKeyboardButton(f"🚫 Kick out {v_uid}", callback_data=f"kick_{v_uid}")])
+
+            await message.reply_text(vip_text, reply_markup=InlineKeyboardMarkup(kick_buttons))
+            return
+
+        # /kickvip <USER_ID> (ADMIN DIRECT COMMAND)
+        if text.startswith("/kickvip"):
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            args = text.split()
+            if len(args) < 2:
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/kickvip &lt;USER_ID&gt;</code>")
+                return
+            try:
+                target_uid = int(args[1].strip())
+            except ValueError:
+                await message.reply_text("❌ වැරදි User ID එකකි.")
+                return
+
+            await kick_user_from_vip_channel(target_uid)
+            await message.reply_text(f"✅ User <code>{target_uid}</code> VIP Channel එකෙන් Kick කර VIP සාමාජිකත්වය අවලංගු කරන ලදී.")
+            return
+
         # /addvip Command
         if text.startswith("/addvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
@@ -534,10 +654,11 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text("❌ වැරදි User ID එකකි.")
                 return
 
-            expiry_date = datetime.utcnow() + timedelta(days=30)
+            now = datetime.utcnow()
+            expiry_date = now + timedelta(days=30)
             await vip_users_col.update_one(
                 {"user_id": target_user_id},
-                {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": datetime.utcnow()}},
+                {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": now}},
                 upsert=True
             )
             try:
@@ -552,7 +673,7 @@ async def universal_message_handler(client: Client, message: Message):
                                 chat_id=target_user_id,
                                 text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
                             )
-                            await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.")
+                            await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.\n📅 Expiry: <code>{expiry_date.strftime('%Y-%m-%d')}</code>")
                             return
                 await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
             except Exception as e:
@@ -641,6 +762,23 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
     if not BOT_USERNAME:
         me = await client.get_me()
         BOT_USERNAME = me.username
+
+    # ACTION: KICK VIP USER
+    if data.startswith("kick_"):
+        if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+            await callback.answer("❌ ඔබට මෙම ක්‍රියාව කිරීමට අවසර නැත.", show_alert=True)
+            return
+
+        target_uid = int(data.replace("kick_", ""))
+        await kick_user_from_vip_channel(target_uid)
+        await callback.answer(f"✅ User {target_uid} සාර්ථකව Kick කරන ලදී!", show_alert=True)
+        try:
+            await callback.message.edit_text(
+                f"{callback.message.text}\n\n<b>🚫 [Kick Status]</b> <code>{target_uid}</code> ඉවත් කරන ලදී."
+            )
+        except Exception:
+            pass
+        return
 
     # ACTION 1: POST TO MAIN CHANNEL
     if data.startswith("post_main_"):
@@ -814,8 +952,9 @@ async def handle_payment_success(client: Client, message: Message):
 
     elif payload == "vip_sub":
         user_id = message.from_user.id
-        expiry = datetime.utcnow() + timedelta(days=30)
-        await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry}}, upsert=True)
+        now = datetime.utcnow()
+        expiry = now + timedelta(days=30)
+        await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry, "joined_at": now}}, upsert=True)
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
