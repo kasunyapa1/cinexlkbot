@@ -114,7 +114,8 @@ async def delete_file_bot_messages(chat_id: int, message_ids: list):
     payload = {"chat_id": chat_id, "message_ids": message_ids}
     try:
         async with aiohttp.ClientSession() as session:
-            await session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8))
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                pass
     except Exception:
         pass
 
@@ -233,7 +234,7 @@ async def gate_step2(request):
     html_page = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=target_delivery_bot, token=token)
     return web.Response(text=html_page, content_type='text/html')
 
-# Dedicated Webhook for File Delivery Bot
+# Webhook for File Delivery Bot
 @routes.post("/filebot_webhook")
 async def file_bot_webhook_handler(request):
     try:
@@ -506,17 +507,18 @@ async def universal_message_handler(client: Client, message: Message):
 
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
 
-    # Storage Channel Uploads
+    # 1. Storage Channel Uploads
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
-    # Private Chats
+    # 2. Private Chats
     chat_type_val = str(getattr(message.chat.type, "value", message.chat.type)).lower()
     if "private" in chat_type_val:
         text = message.text or ""
         user_id = message.from_user.id if message.from_user else 0
+        target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
         # /addvip Command
         if text.startswith("/addvip"):
@@ -566,11 +568,13 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 return
 
-            # Direct fallback if called in Main Bot
+            # RE-ROUTING OLD POSTS: Seamlessly redirect old VIP links to File Bot
             if param.startswith("vipfile_"):
-                mid = int(param.split("_")[1])
-                await message.reply_text("👑 <b>VIP Direct File:</b>")
-                asyncio.create_task(deliver_file_bot_movie(user_id, mid, is_vip=True))
+                mid = param.split("_")[1]
+                dl_btn = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📥 Download Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}")]
+                ])
+                await message.reply_text("👑 <b>Cinex LK VIP Direct File:</b>\n\nචිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න 👇", reply_markup=dl_btn)
                 return
 
             if param.startswith("tok1_"):
@@ -582,10 +586,13 @@ async def universal_message_handler(client: Client, message: Message):
                 )
                 return
 
+            # RE-ROUTING OLD POSTS: Seamlessly redirect old Step 2 links to File Bot
             if param.startswith("tok2_"):
-                mid = int(param.split("_")[2])
-                await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි! මෙන්න ඔබගේ චිත්‍රපටය:</b>")
-                asyncio.create_task(deliver_file_bot_movie(user_id, mid, is_vip=False))
+                mid = param.split("_")[2]
+                dl_btn = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📥 Get Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=tok2_{mid}")]
+                ])
+                await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b>\n\nචිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න 👇", reply_markup=dl_btn)
                 return
 
             if param.startswith("buy_"):
