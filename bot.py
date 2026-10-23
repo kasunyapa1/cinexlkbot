@@ -12,7 +12,8 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery
+    CallbackQuery,
+    LabeledPrice
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -114,7 +115,7 @@ async def delete_file_bot_messages(chat_id: int, message_ids: list):
     payload = {"chat_id": chat_id, "message_ids": message_ids}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8)):
                 pass
     except Exception:
         pass
@@ -165,7 +166,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
 # =========================================================
 routes = web.RouteTableDef()
 
-# Fixed PC & Mobile Deep Link Support
+# Clean PC Desktop & Mobile Compatible Redirection
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -180,7 +181,7 @@ SAME_PAGE_GATE_HTML = """
         .step-label {{ font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }}
         .countdown-wrap {{ display:flex; align-items:center; gap:8px; }}
         .count-circle {{ width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }}
-        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }}
+        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; }}
         .btn:hover {{ background:#268d46; }}
         #ad-frame {{ width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }}
     </style>
@@ -193,7 +194,7 @@ SAME_PAGE_GATE_HTML = """
         </div>
         <div class="countdown-wrap">
             <div class="count-circle" id="count">8</div>
-            <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}" onclick="openTelegram(event, '{bot_username}', '{token}')">✅ Go to Telegram</a>
+            <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}" target="_top">✅ Go to Telegram</a>
         </div>
     </div>
     <iframe id="ad-frame" src="{ad_url}" sandbox="allow-forms allow-scripts allow-same-origin allow-popups"></iframe>
@@ -209,15 +210,6 @@ SAME_PAGE_GATE_HTML = """
                 document.getElementById('doneBtn').style.display = 'block';
             }}
         }}, 1000);
-
-        function openTelegram(e, bot, token) {{
-            const tgProtocol = "tg://resolve?domain=" + bot + "&start=" + token;
-            const webLink = "https://t.me/" + bot + "?start=" + token;
-            window.location.href = tgProtocol;
-            setTimeout(() => {{
-                window.location.href = webLink;
-            }}, 500);
-        }}
     </script>
 </body>
 </html>
@@ -274,7 +266,7 @@ async def file_bot_webhook_handler(request):
     return web.Response(text="ok", status=200)
 
 # =========================================================
-# TELEGRAM RAW HTTP HELPERS & STARS INVOICE
+# TELEGRAM RAW HTTP HELPERS & STARS INVOICE ENGINE
 # =========================================================
 async def kick_user_from_vip_channel(user_id: int):
     url_ban = f"https://api.telegram.org/bot{BOT_TOKEN}/banChatMember"
@@ -293,26 +285,21 @@ async def kick_user_from_vip_channel(user_id: int):
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
 
-# 100% Working Telegram Stars Engine (Strict Telegram API XTR Requirements)
+# Native Pyrogram Stars Invoice Sender (100% Reliable XTR Delivery)
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    body = {
-        "chat_id": int(chat_id),
-        "title": str(title)[:32],
-        "description": str(description)[:255],
-        "payload": str(payload),
-        "currency": "XTR",
-        "prices": [{"label": str(title)[:30], "amount": int(stars)}]
-    }
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                res = await resp.json()
-                if not res.get("ok"):
-                    print(f"Stars API Error: {res.get('description')}")
-                return res.get("ok", False), res.get("description", "")
+        await app.send_invoice(
+            chat_id=int(chat_id),
+            title=str(title)[:32],
+            description=str(description)[:255],
+            payload=str(payload),
+            currency="XTR",
+            prices=[LabeledPrice(label=str(title)[:30], amount=int(stars))],
+            provider_token=""
+        )
+        return True, ""
     except Exception as e:
-        print(f"Stars Post Exception: {e}")
+        print(f"Pyrogram Stars Invoice Error: {e}", flush=True)
         return False, str(e)
 
 async def send_tg_photo_fileid(chat_id: str, file_id: str, caption_html: str, reply_markup: dict):
@@ -712,7 +699,7 @@ async def universal_message_handler(client: Client, message: Message):
                 mid = param.split("_")[2]
                 step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                 await message.reply_text(
-                    "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
+                    "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවත කරන්න:",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
                 )
                 return
@@ -885,10 +872,10 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
-    # VIP STARS CALLBACK (FIXED)
+    # VIP STARS CALLBACK (NATIVE PYROGRAM ENGINE)
     if data == "pay_vip_stars":
         await callback.answer()
-        ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass (30 Days)", "VIP Access (No Ads)", "vip_sub", VIP_STAR_PRICE)
+        ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass", "VIP Access (30 Days - No Ads)", "vip_sub", VIP_STAR_PRICE)
         if not ok:
             await callback.message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
         return
