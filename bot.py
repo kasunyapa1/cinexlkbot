@@ -12,8 +12,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery,
-    LabeledPrice
+    CallbackQuery
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -166,7 +165,6 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
 # =========================================================
 routes = web.RouteTableDef()
 
-# Clean PC Desktop & Mobile Compatible Redirection
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -181,7 +179,7 @@ SAME_PAGE_GATE_HTML = """
         .step-label {{ font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }}
         .countdown-wrap {{ display:flex; align-items:center; gap:8px; }}
         .count-circle {{ width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }}
-        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; }}
+        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }}
         .btn:hover {{ background:#268d46; }}
         #ad-frame {{ width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }}
     </style>
@@ -285,21 +283,26 @@ async def kick_user_from_vip_channel(user_id: int):
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
 
-# Native Pyrogram Stars Invoice Sender (100% Reliable XTR Delivery)
+# Telegram Stars (XTR) Direct JSON Invoice Sender
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+    body = {
+        "chat_id": int(chat_id),
+        "title": str(title)[:32],
+        "description": str(description)[:255],
+        "payload": str(payload),
+        "currency": "XTR",
+        "prices": [{"label": str(title)[:30], "amount": int(stars)}]
+    }
     try:
-        await app.send_invoice(
-            chat_id=int(chat_id),
-            title=str(title)[:32],
-            description=str(description)[:255],
-            payload=str(payload),
-            currency="XTR",
-            prices=[LabeledPrice(label=str(title)[:30], amount=int(stars))],
-            provider_token=""
-        )
-        return True, ""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                res = await resp.json()
+                if not res.get("ok"):
+                    print(f"Stars API Error: {res.get('description')}", flush=True)
+                return res.get("ok", False), res.get("description", "")
     except Exception as e:
-        print(f"Pyrogram Stars Invoice Error: {e}", flush=True)
+        print(f"Stars Post Exception: {e}", flush=True)
         return False, str(e)
 
 async def send_tg_photo_fileid(chat_id: str, file_id: str, caption_html: str, reply_markup: dict):
@@ -699,7 +702,7 @@ async def universal_message_handler(client: Client, message: Message):
                 mid = param.split("_")[2]
                 step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                 await message.reply_text(
-                    "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවත කරන්න:",
+                    "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
                 )
                 return
@@ -872,7 +875,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
-    # VIP STARS CALLBACK (NATIVE PYROGRAM ENGINE)
+    # VIP STARS CALLBACK
     if data == "pay_vip_stars":
         await callback.answer()
         ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass", "VIP Access (30 Days - No Ads)", "vip_sub", VIP_STAR_PRICE)
@@ -979,18 +982,18 @@ async def setup_file_bot_webhook():
                 async with session.get(set_url) as resp:
                     data = await resp.json()
                     if data.get("ok"):
-                        print(f"🔗 File Bot Webhook Linked: {webhook_url}")
+                        print(f"🔗 File Bot Webhook Linked: {webhook_url}", flush=True)
                     else:
-                        print(f"⚠️ Webhook Warning: {data.get('description')}")
+                        print(f"⚠️ Webhook Warning: {data.get('description')}", flush=True)
         except Exception as e:
-            print(f"Webhook Exception: {e}")
+            print(f"Webhook Exception: {e}", flush=True)
 
 async def main():
     global BOT_USERNAME
     await app.start()
     me = await app.get_me()
     BOT_USERNAME = me.username
-    print(f"🤖 Cinex LK Super-Control Bot Live as @{BOT_USERNAME}")
+    print(f"🤖 Cinex LK Super-Control Bot Live as @{BOT_USERNAME}", flush=True)
 
     web_app = web.Application()
     web_app.add_routes(routes)
@@ -998,7 +1001,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Web Engine Live on port {PORT}")
+    print(f"🌐 Web Engine Live on port {PORT}", flush=True)
 
     await setup_file_bot_webhook()
 
