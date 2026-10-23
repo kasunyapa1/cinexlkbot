@@ -133,7 +133,6 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     except Exception:
         pass
 
-    # Clear Sinhala User Instruction Message
     warn_text = (
         "⚡ <b>Cinex LK Delivery Update:</b>\n\n"
         f"⚠️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත මෙම චිත්‍රපටය තවත් {time_label} Chat එකෙන් ස්වයංක්‍රීයව මැකී යයි.</b>\n\n"
@@ -538,7 +537,7 @@ async def universal_message_handler(client: Client, message: Message):
     # 2. Private Chats
     chat_type_val = str(getattr(message.chat.type, "value", message.chat.type)).lower()
     if "private" in chat_type_val:
-        text = message.text or ""
+        text = (message.text or "").strip()
         user_id = message.from_user.id if message.from_user else 0
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
@@ -752,11 +751,56 @@ async def universal_message_handler(client: Client, message: Message):
                 )
                 return
 
-            await message.reply_text(
+            welcome_text = (
                 "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
-                "🔍 Movie එකේ නම එවන්න.\n"
-                "👑 VIP සාමාජිකත්වය: <code>/start vip</code>"
+                "📌 <b>ප්‍රධාන විධානයන් (Commands):</b>\n"
+                "• 🎬 <b>Movie එකක් ඉල්ලීමට:</b> <code>/req &lt;Movie Name&gt;</code> (හෝ නම එවන්න)\n"
+                "• 👑 <b>VIP සාමාජිකත්වය:</b> <code>/start vip</code>\n\n"
+                f"📢 නිල Channel එක: {MAIN_CHANNEL}"
             )
+            await message.reply_text(welcome_text)
+            return
+
+        # =========================================================
+        # MOVIE REQUEST SYSTEM (/req OR TEXT)
+        # =========================================================
+        req_movie = ""
+        if text.startswith("/req"):
+            parts = text.split(maxsplit=1)
+            if len(parts) > 1:
+                req_movie = parts[1].strip()
+            else:
+                await message.reply_text("❌ <b>කරුණාකර චිත්‍රපටයේ නම ඇතුළත් කරන්න.</b>\nඋදා: <code>/req Avatar 2</code>")
+                return
+        elif not text.startswith("/"):
+            req_movie = text
+
+        if req_movie:
+            user_full = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+            user_handle = f"@{message.from_user.username}" if message.from_user.username else "No Username"
+            is_vip = await is_vip_user(user_id)
+            vip_tag = "👑 VIP MEMBER" if is_vip else "👤 Regular User"
+
+            if ADMIN_USER_ID:
+                admin_alert = (
+                    "📩 <b>නව Movie Request එකක් ලැබුණා!</b>\n\n"
+                    f"🎬 <b>Movie:</b> <code>{html.escape(req_movie)}</code>\n"
+                    f"👤 <b>User:</b> {html.escape(user_full)} ({user_handle})\n"
+                    f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+                    f"🎖️ <b>Status:</b> <b>{vip_tag}</b>"
+                )
+                try:
+                    await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
+                except Exception:
+                    pass
+
+            resp_text = (
+                f"✅ <b>ඔබගේ Request එක Admin වෙත යොමු කරන ලදී!</b>\n\n"
+                f"🎬 <b>චිත්‍රපටය:</b> <code>{html.escape(req_movie)}</code>\n\n"
+                "කඩිනමින් අපගේ Main සහ VIP Channels වෙත මෙය Upload කරනු ඇත. රැඳී සිටින්න!"
+            )
+            await message.reply_text(resp_text)
+            return
 
 # =========================================================
 # CALLBACK HANDLER
