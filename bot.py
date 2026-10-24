@@ -133,6 +133,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     except Exception:
         pass
 
+    # Clear Sinhala User Instruction Message (With MX Player Notice)
     warn_text = (
         "⚡ <b>Cinex LK Delivery Update:</b>\n\n"
         f"⚠️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත මෙම චිත්‍රපටය තවත් {time_label} Chat එකෙන් ස්වයංක්‍රීයව මැකී යයි.</b>\n\n"
@@ -177,15 +178,15 @@ SAME_PAGE_GATE_HTML = """
     <title>Sponsor Verification - Cinex LK</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        * {{ box-sizing: border-box; }}
-        body, html {{ margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }}
-        #header-bar {{ height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }}
-        .step-label {{ font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }}
-        .countdown-wrap {{ display:flex; align-items:center; gap:8px; }}
-        .count-circle {{ width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }}
-        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }}
-        .btn:hover {{ background:#268d46; }}
-        #ad-frame {{ width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }}
+        * { box-sizing: border-box; }
+        body, html { margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }
+        #header-bar { height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }
+        .step-label { font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }
+        .countdown-wrap { display:flex; align-items:center; gap:8px; }
+        .count-circle { width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }
+        .btn { display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }
+        .btn:hover { background:#268d46; }
+        #ad-frame { width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }
     </style>
 </head>
 <body>
@@ -202,16 +203,16 @@ SAME_PAGE_GATE_HTML = """
     <iframe id="ad-frame" src="{ad_url}" sandbox="allow-forms allow-scripts allow-same-origin allow-popups"></iframe>
     <script>
         let sec = 8;
-        const timer = setInterval(() => {{
+        const timer = setInterval(() => {
             sec--;
             document.getElementById('count').innerText = sec;
-            if (sec <= 0) {{
+            if (sec <= 0) {
                 clearInterval(timer);
                 document.getElementById('count').style.display = 'none';
                 document.getElementById('status-text').innerText = '🎉 සත්‍යාපනය සාර්ථකයි!';
                 document.getElementById('doneBtn').style.display = 'block';
-            }}
-        }}, 1000);
+            }
+        }, 1000);
     </script>
 </body>
 </html>
@@ -287,10 +288,8 @@ async def kick_user_from_vip_channel(user_id: int):
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
 
-# Telegram Stars (XTR) Sender - Strict Schema (Omit provider_token)
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    # Note: Telegram Stars requires currency "XTR". provider_token MUST NOT be sent.
     body = {
         "chat_id": int(chat_id),
         "title": str(title)[:32],
@@ -304,10 +303,8 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
             async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 res = await resp.json()
                 if not res.get("ok"):
-                    desc = res.get("description", "Unknown Telegram API Error")
-                    print(f"Stars API Error: {desc}", flush=True)
-                    return False, desc
-                return True, ""
+                    print(f"Stars API Error: {res.get('description')}", flush=True)
+                return res.get("ok", False), res.get("description", "")
     except Exception as e:
         print(f"Stars Post Exception: {e}", flush=True)
         return False, str(e)
@@ -547,31 +544,6 @@ async def universal_message_handler(client: Client, message: Message):
         user_id = message.from_user.id if message.from_user else 0
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
-        # Check for Telegram Stars Successful Payment
-        if getattr(message, "successful_payment", None):
-            payload = message.successful_payment.invoice_payload
-            if payload.startswith("single_"):
-                mid = int(payload.split("_")[1])
-                dl_link = f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}"
-                await message.reply_text(
-                    "🎉 <b>Stars ගෙවීම සාර්ථකයි!</b>\n\nපහත Button එකෙන් Direct File එක ලබාගන්න 👇",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie File", url=dl_link)]])
-                )
-                return
-
-            elif payload == "vip_sub":
-                now = datetime.utcnow()
-                expiry = now + timedelta(days=30)
-                await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry, "joined_at": now}}, upsert=True)
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
-                        res = await resp.json()
-                        if res.get("ok"):
-                            link = res["result"]["invite_link"]
-                            await message.reply_text(f"🎉 <b>VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
-                return
-
         # /stats Command (ADMIN ONLY)
         if text == "/stats":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
@@ -721,6 +693,7 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 return
 
+            # RE-ROUTING OLD POSTS: Seamlessly redirect old VIP links to File Bot
             if param.startswith("vipfile_"):
                 mid = param.split("_")[1]
                 dl_btn = InlineKeyboardMarkup([
@@ -738,6 +711,7 @@ async def universal_message_handler(client: Client, message: Message):
                 )
                 return
 
+            # RE-ROUTING OLD POSTS: Seamlessly redirect old Step 2 links to File Bot
             if param.startswith("tok2_"):
                 mid = param.split("_")[2]
                 dl_btn = InlineKeyboardMarkup([
@@ -761,7 +735,7 @@ async def universal_message_handler(client: Client, message: Message):
                     stars=SINGLE_STAR_PRICE
                 )
                 if not ok:
-                    await message.reply_text(f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
+                    await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
                 return
 
             if not await check_access(user_id):
@@ -862,7 +836,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL (Unlocked & Re-post Enabled)
+    # ACTION 1: POST TO MAIN CHANNEL (With Dynamic Button Update & Unlocked Re-post)
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -883,6 +857,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
+            # Update Button Text to "✅ Posted to Main (Re-post)" WITHOUT LOCKING
             try:
                 current_keyboard = callback.message.reply_markup.inline_keyboard
                 new_keyboard = []
@@ -902,7 +877,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL (Unlocked & Re-post Enabled)
+    # ACTION 2: POST TO VIP CHANNEL (With Dynamic Button Update & Unlocked Re-post)
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -938,6 +913,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         if sent:
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
+            # Update Button Text to "✅ Posted to VIP (Re-post)" WITHOUT LOCKING
             try:
                 current_keyboard = callback.message.reply_markup.inline_keyboard
                 new_keyboard = []
@@ -975,9 +951,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     f_doc = await files_col.find_one({"message_id": int(mid)})
                     m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
                     clean_t = clean_movie_title(m_title)[0]
-                    ok, err = await send_tg_invoice(user_id, f"⚡ {clean_t[:25]}", f"{clean_t} Direct File", f"single_{mid}", SINGLE_STAR_PRICE)
-                    if not ok:
-                        await client.send_message(user_id, f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
+                    await send_tg_invoice(user_id, f"⚡ {clean_t[:25]}", f"{clean_t} Direct File", f"single_{mid}", SINGLE_STAR_PRICE)
             else:
                 await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න.")
         else:
@@ -989,7 +963,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         await callback.answer()
         ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass", "VIP Access (30 Days - No Ads)", "vip_sub", VIP_STAR_PRICE)
         if not ok:
-            await callback.message.reply_text(f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
+            await callback.message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
         return
 
     # VIP BANK CALLBACK
@@ -1042,18 +1016,42 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         return
 
 # =========================================================
-# TELEGRAM STARS PRECHECKOUT HANDLER
+# TELEGRAM STARS PRECHECKOUT & SUCCESS
 # =========================================================
 @app.on_raw_update()
-async def raw_update_precheckout(client: Client, update, users, chats):
+async def handle_precheckout(client: Client, update, users, chats):
     if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
-        payload = {"pre_checkout_query_id": str(update.query_id), "ok": True}
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8))
-        except Exception:
-            pass
+        async with aiohttp.ClientSession() as session:
+            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
+
+payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
+
+@app.on_message(payment_filter)
+async def handle_payment_success(client: Client, message: Message):
+    payload = message.successful_payment.invoice_payload
+    target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
+
+    if payload.startswith("single_"):
+        mid = int(payload.split("_")[1])
+        dl_link = f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}"
+        await message.reply_text(
+            "🎉 <b>Stars ගෙවීම සාර්ථකයි!</b>\n\nපහත Button එකෙන් Direct File එක ලබාගන්න 👇",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie File", url=dl_link)]])
+        )
+
+    elif payload == "vip_sub":
+        user_id = message.from_user.id
+        now = datetime.utcnow()
+        expiry = now + timedelta(days=30)
+        await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry, "joined_at": now}}, upsert=True)
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    link = res["result"]["invite_link"]
+                    await message.reply_text(f"🎉 <b>VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
 
 # =========================================================
 # SERVER INIT & RUNNER
