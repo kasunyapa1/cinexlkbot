@@ -133,7 +133,6 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     except Exception:
         pass
 
-    # Clear Sinhala User Instruction Message (With MX Player Notice)
     warn_text = (
         "⚡ <b>Cinex LK Delivery Update:</b>\n\n"
         f"⚠️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත මෙම චිත්‍රපටය තවත් {time_label} Chat එකෙන් ස්වයංක්‍රීයව මැකී යයි.</b>\n\n"
@@ -836,7 +835,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL
+    # ACTION 1: POST TO MAIN CHANNEL (Unlocked & Re-post Enabled)
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -856,11 +855,28 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             else:
                 await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
+
+            # Update Button Text to "✅ Posted to Main (Re-post)" WITHOUT LOCKING
+            try:
+                current_keyboard = callback.message.reply_markup.inline_keyboard
+                new_keyboard = []
+                for row in current_keyboard:
+                    new_row = []
+                    for btn in row:
+                        if btn.callback_data == f"post_main_{msg_id}":
+                            new_row.append(InlineKeyboardButton("✅ Posted to Main (Re-post)", callback_data=f"post_main_{msg_id}"))
+                        else:
+                            new_row.append(btn)
+                    new_keyboard.append(new_row)
+                await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
+            except Exception:
+                pass
+
         except Exception as e:
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL
+    # ACTION 2: POST TO VIP CHANNEL (Unlocked & Re-post Enabled)
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -895,6 +911,23 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
         if sent:
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
+
+            # Update Button Text to "✅ Posted to VIP (Re-post)" WITHOUT LOCKING
+            try:
+                current_keyboard = callback.message.reply_markup.inline_keyboard
+                new_keyboard = []
+                for row in current_keyboard:
+                    new_row = []
+                    for btn in row:
+                        if btn.callback_data == f"post_vip_{msg_id}":
+                            new_row.append(InlineKeyboardButton("✅ Posted to VIP (Re-post)", callback_data=f"post_vip_{msg_id}"))
+                        else:
+                            new_row.append(btn)
+                    new_keyboard.append(new_row)
+                await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
+            except Exception:
+                pass
+
         else:
             await callback.answer(f"❌ VIP Fail: {err_desc[:100]}", show_alert=True)
         return
