@@ -12,8 +12,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery,
-    PreCheckoutQuery
+    CallbackQuery
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -288,7 +287,6 @@ async def kick_user_from_vip_channel(user_id: int):
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
 
-# Telegram Stars (XTR) Direct JSON Invoice Sender
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     body = {
@@ -296,7 +294,7 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
         "title": str(title)[:32],
         "description": str(description)[:255],
         "payload": str(payload),
-        "provider_token": "",  # Stars සඳහා Telegram Bot API හි provider_token empty string විය යුතුය
+        "provider_token": "",
         "currency": "XTR",
         "prices": [{"label": str(title)[:30], "amount": int(stars)}]
     }
@@ -1016,14 +1014,17 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 # =========================================================
 # TELEGRAM STARS PRECHECKOUT & SUCCESS HANDLERS
 # =========================================================
-@app.on_pre_checkout_query()
-async def process_pre_checkout_query(client: Client, query: PreCheckoutQuery):
-    try:
-        await query.answer(ok=True)
-    except Exception:
+@app.on_raw_update()
+async def raw_update_precheckout(client: Client, update, users, chats):
+    # Pyrogram Raw Precheckout Query Handshake (Universal & Safe)
+    if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"pre_checkout_query_id": str(query.id), "ok": True})
+        payload = {"pre_checkout_query_id": str(update.query_id), "ok": True}
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8))
+        except Exception:
+            pass
 
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
