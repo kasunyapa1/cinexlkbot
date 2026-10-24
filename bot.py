@@ -287,14 +287,15 @@ async def kick_user_from_vip_channel(user_id: int):
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
 
+# Telegram Stars (XTR) Sender - Strict Schema (Omit provider_token)
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+    # Note: Telegram Stars requires currency "XTR". provider_token MUST NOT be sent.
     body = {
         "chat_id": int(chat_id),
         "title": str(title)[:32],
         "description": str(description)[:255],
         "payload": str(payload),
-        "provider_token": "",
         "currency": "XTR",
         "prices": [{"label": str(title)[:30], "amount": int(stars)}]
     }
@@ -303,8 +304,10 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
             async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 res = await resp.json()
                 if not res.get("ok"):
-                    print(f"Stars API Error: {res.get('description')}", flush=True)
-                return res.get("ok", False), res.get("description", "")
+                    desc = res.get("description", "Unknown Telegram API Error")
+                    print(f"Stars API Error: {desc}", flush=True)
+                    return False, desc
+                return True, ""
     except Exception as e:
         print(f"Stars Post Exception: {e}", flush=True)
         return False, str(e)
@@ -544,6 +547,31 @@ async def universal_message_handler(client: Client, message: Message):
         user_id = message.from_user.id if message.from_user else 0
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
+        # Check for Telegram Stars Successful Payment
+        if getattr(message, "successful_payment", None):
+            payload = message.successful_payment.invoice_payload
+            if payload.startswith("single_"):
+                mid = int(payload.split("_")[1])
+                dl_link = f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}"
+                await message.reply_text(
+                    "🎉 <b>Stars ගෙවීම සාර්ථකයි!</b>\n\nපහත Button එකෙන් Direct File එක ලබාගන්න 👇",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie File", url=dl_link)]])
+                )
+                return
+
+            elif payload == "vip_sub":
+                now = datetime.utcnow()
+                expiry = now + timedelta(days=30)
+                await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry, "joined_at": now}}, upsert=True)
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
+                        res = await resp.json()
+                        if res.get("ok"):
+                            link = res["result"]["invite_link"]
+                            await message.reply_text(f"🎉 <b>VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
+                return
+
         # /stats Command (ADMIN ONLY)
         if text == "/stats":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
@@ -733,7 +761,7 @@ async def universal_message_handler(client: Client, message: Message):
                     stars=SINGLE_STAR_PRICE
                 )
                 if not ok:
-                    await message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
+                    await message.reply_text(f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
                 return
 
             if not await check_access(user_id):
@@ -947,7 +975,9 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     f_doc = await files_col.find_one({"message_id": int(mid)})
                     m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
                     clean_t = clean_movie_title(m_title)[0]
-                    await send_tg_invoice(user_id, f"⚡ {clean_t[:25]}", f"{clean_t} Direct File", f"single_{mid}", SINGLE_STAR_PRICE)
+                    ok, err = await send_tg_invoice(user_id, f"⚡ {clean_t[:25]}", f"{clean_t} Direct File", f"single_{mid}", SINGLE_STAR_PRICE)
+                    if not ok:
+                        await client.send_message(user_id, f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
             else:
                 await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න.")
         else:
@@ -959,7 +989,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         await callback.answer()
         ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass", "VIP Access (30 Days - No Ads)", "vip_sub", VIP_STAR_PRICE)
         if not ok:
-            await callback.message.reply_text(f"⚠️ Stars Invoice Error: <code>{err}</code>")
+            await callback.message.reply_text(f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
         return
 
     # VIP BANK CALLBACK
@@ -1012,11 +1042,10 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         return
 
 # =========================================================
-# TELEGRAM STARS PRECHECKOUT & SUCCESS HANDLERS
+# TELEGRAM STARS PRECHECKOUT HANDLER
 # =========================================================
 @app.on_raw_update()
 async def raw_update_precheckout(client: Client, update, users, chats):
-    # Pyrogram Raw Precheckout Query Handshake (Universal & Safe)
     if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
         payload = {"pre_checkout_query_id": str(update.query_id), "ok": True}
@@ -1025,34 +1054,6 @@ async def raw_update_precheckout(client: Client, update, users, chats):
                 await session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8))
         except Exception:
             pass
-
-payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
-
-@app.on_message(payment_filter)
-async def handle_payment_success(client: Client, message: Message):
-    payload = message.successful_payment.invoice_payload
-    target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
-
-    if payload.startswith("single_"):
-        mid = int(payload.split("_")[1])
-        dl_link = f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}"
-        await message.reply_text(
-            "🎉 <b>Stars ගෙවීම සාර්ථකයි!</b>\n\nපහත Button එකෙන් Direct File එක ලබාගන්න 👇",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie File", url=dl_link)]])
-        )
-
-    elif payload == "vip_sub":
-        user_id = message.from_user.id
-        now = datetime.utcnow()
-        expiry = now + timedelta(days=30)
-        await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry, "joined_at": now}}, upsert=True)
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
-                res = await resp.json()
-                if res.get("ok"):
-                    link = res["result"]["invite_link"]
-                    await message.reply_text(f"🎉 <b>VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
 
 # =========================================================
 # SERVER INIT & RUNNER
