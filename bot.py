@@ -53,9 +53,8 @@ BACKUP_CHANNEL_LINK = os.environ.get("BACKUP_CHANNEL_LINK", "").strip()
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "").strip()
 
-VIP_STAR_PRICE = int(os.environ.get("VIP_STAR_PRICE", "250"))
+# VIP Price dynamically updated from Environment Variable
 VIP_LKR_PRICE = int(os.environ.get("VIP_LKR_PRICE", "1000"))
-SINGLE_STAR_PRICE = int(os.environ.get("SINGLE_STAR_PRICE", "5"))
 
 DEFAULT_POSTER = "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?q=80&w=1000&auto=format&fit=crop"
 
@@ -97,10 +96,6 @@ CACHED_BACKUP_LINK = BACKUP_CHANNEL_LINK
 # DYNAMIC VIP TEXT & BUTTON BUILDER (AUTO-CALCULATED)
 # =========================================================
 def get_vip_info():
-    # 1 Star ~= 6.8 LKR (Auto calculation based on env vars)
-    approx_lkr = int(VIP_STAR_PRICE * 6.8)
-    savings = max(0, approx_lkr - VIP_LKR_PRICE)
-
     text = (
         "👑 <b>Cinex LK VIP Pass (Monthly - 30 Days)</b>\n\n"
         "✨ <b>VIP සාමාජිකත්වයේ වාසි:</b>\n"
@@ -108,15 +103,12 @@ def get_vip_info():
         "• Direct Files ක්ෂණිකව ලබාගත හැක\n"
         "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n"
         "• පැය 24ක Auto-Delete කාලයක් හිමිවීම\n\n"
-        f"💵 <b>ගාස්තු විස්තර:</b>\n"
-        f"⭐ Telegram Stars: <b>{VIP_STAR_PRICE} Stars</b> (~Rs. {approx_lkr})\n"
-        f"🇱🇰 Bank Transfer: <b>Rs. {VIP_LKR_PRICE}</b> (ඉතිරිය: Rs. {savings} 🔥)\n\n"
-        "👇 <b>ගෙවීම් කිරීමට කැමති ආකාරය තෝරන්න:</b>"
+        f"💰 <b>මාසික ගාස්තුව:</b> <b>Rs. {VIP_LKR_PRICE} පමණි</b>\n\n"
+        "👇 VIP සාමාජිකත්වය ලබාගැනීමට පහත Button එක ඔබන්න:"
     )
 
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"⭐ Pay with Telegram Stars ({VIP_STAR_PRICE} ⭐️)", callback_data="pay_vip_stars")],
-        [InlineKeyboardButton(f"🇱🇰 Bank Transfer - Rs. {VIP_LKR_PRICE} (Save Rs. {savings} 🔥)", callback_data="pay_vip_bank")]
+        [InlineKeyboardButton(f"🇱🇰 Get VIP Pass (Rs. {VIP_LKR_PRICE})", callback_data="pay_vip_bank")]
     ])
 
     return text, markup
@@ -295,7 +287,7 @@ async def file_bot_webhook_handler(request):
     return web.Response(text="ok", status=200)
 
 # =========================================================
-# TELEGRAM RAW HTTP HELPERS & STARS INVOICE ENGINE
+# TELEGRAM RAW HTTP HELPERS
 # =========================================================
 async def kick_user_from_vip_channel(user_id: int):
     url_ban = f"https://api.telegram.org/bot{BOT_TOKEN}/banChatMember"
@@ -313,31 +305,6 @@ async def kick_user_from_vip_channel(user_id: int):
         {"user_id": int(user_id)},
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
-
-# Telegram Stars (XTR) Sender: provider_token="" is mandatory
-async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    body = {
-        "chat_id": int(chat_id),
-        "title": str(title)[:32],
-        "description": str(description)[:255],
-        "payload": str(payload),
-        "provider_token": "",
-        "currency": "XTR",
-        "prices": [{"label": str(title)[:30], "amount": int(stars)}]
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                res = await resp.json()
-                if not res.get("ok"):
-                    desc = res.get("description", "Unknown Telegram API Error")
-                    print(f"Stars API Error: {desc}", flush=True)
-                    return False, desc
-                return True, ""
-    except Exception as e:
-        print(f"Stars Post Exception: {e}", flush=True)
-        return False, str(e)
 
 async def send_tg_photo_fileid(chat_id: str, file_id: str, caption_html: str, reply_markup: dict):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -556,31 +523,6 @@ async def universal_message_handler(client: Client, message: Message):
         user_id = message.from_user.id if message.from_user else 0
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
-        # Successful Stars Payment
-        if getattr(message, "successful_payment", None):
-            payload = message.successful_payment.invoice_payload
-            if payload.startswith("single_"):
-                mid = int(payload.split("_")[1])
-                dl_link = f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}"
-                await message.reply_text(
-                    "🎉 <b>Stars ගෙවීම සාර්ථකයි!</b>\n\nපහත Button එකෙන් Direct File එක ලබාගන්න 👇",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie File", url=dl_link)]])
-                )
-                return
-
-            elif payload == "vip_sub":
-                now = datetime.utcnow()
-                expiry = now + timedelta(days=30)
-                await vip_users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "expiry_date": expiry, "joined_at": now}}, upsert=True)
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
-                        res = await resp.json()
-                        if res.get("ok"):
-                            link = res["result"]["invite_link"]
-                            await message.reply_text(f"🎉 <b>VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
-                return
-
         # /stats Command
         if text == "/stats":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
@@ -726,7 +668,7 @@ async def universal_message_handler(client: Client, message: Message):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
 
-            if param in ["buyvip", "vip", "buystar_vip"]:
+            if param in ["buyvip", "vip"]:
                 vip_text, vip_markup = get_vip_info()
                 await message.reply_text(vip_text, reply_markup=vip_markup)
                 return
@@ -754,24 +696,6 @@ async def universal_message_handler(client: Client, message: Message):
                     [InlineKeyboardButton("📥 Get Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=tok2_{mid}")]
                 ])
                 await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b>\n\nචිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න 👇", reply_markup=dl_btn)
-                return
-
-            # Single Movie Instant Stars Purchase
-            if param.startswith("buy_"):
-                mid = param.split("_")[1]
-                f_doc = await files_col.find_one({"message_id": int(mid)})
-                m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
-                clean_t = clean_movie_title(m_title)[0]
-
-                ok, err = await send_tg_invoice(
-                    chat_id=user_id,
-                    title=f"⚡ {clean_t[:25]}",
-                    description=f"{clean_t} චිත්‍රපටය Telegram Stars හරහා ලබාගැනීමට.",
-                    payload=f"single_{mid}",
-                    stars=SINGLE_STAR_PRICE
-                )
-                if not ok:
-                    await message.reply_text(f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
                 return
 
             if not await check_access(user_id):
@@ -872,17 +796,14 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL (Unlocked & Re-post Enabled)
+    # ACTION 1: POST TO MAIN CHANNEL (Clean Free Download + Buy VIP Buttons)
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
 
         main_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Fast Download (Ads)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
-            [
-                InlineKeyboardButton(f"⚡ Instant ({SINGLE_STAR_PRICE} ⭐️)", url=f"https://t.me/{BOT_USERNAME}?start=buy_{msg_id}"),
-                InlineKeyboardButton("👑 Buy VIP Pass (Monthly)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")
-            ]
+            [InlineKeyboardButton("📥 Fast Download (Free)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
+            [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")]
         ])
 
         target = MAIN_CHANNEL
@@ -913,7 +834,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL (Unlocked & Re-post Enabled)
+    # ACTION 2: POST TO VIP CHANNEL (Direct File Button)
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -980,32 +901,16 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     mid = param.split("_")[1]
                     step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                     await client.send_message(user_id, "🎬 <b>Step 1 of 2:</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
-                elif param in ["buyvip", "vip", "buystar_vip"]:
+                elif param in ["buyvip", "vip"]:
                     vip_text, vip_markup = get_vip_info()
                     await client.send_message(user_id, vip_text, reply_markup=vip_markup)
-                elif param.startswith("buy_"):
-                    mid = param.split("_")[1]
-                    f_doc = await files_col.find_one({"message_id": int(mid)})
-                    m_title = f_doc.get("file_name", "Movie File") if f_doc else "Movie File"
-                    clean_t = clean_movie_title(m_title)[0]
-                    ok, err = await send_tg_invoice(user_id, f"⚡ {clean_t[:25]}", f"{clean_t} Direct File", f"single_{mid}", SINGLE_STAR_PRICE)
-                    if not ok:
-                        await client.send_message(user_id, f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
             else:
                 await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න.")
         else:
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
-    # VIP STARS CALLBACK
-    if data == "pay_vip_stars":
-        await callback.answer()
-        ok, err = await send_tg_invoice(user_id, "👑 Cinex LK VIP Pass", "VIP Access (30 Days - No Ads)", "vip_sub", VIP_STAR_PRICE)
-        if not ok:
-            await callback.message.reply_text(f"⚠️ Stars Invoice Error:\n<code>{html.escape(str(err))}</code>")
-        return
-
-    # VIP BANK CALLBACK
+    # VIP BANK CALLBACK (Direct Bank Workflow)
     if data == "pay_vip_bank":
         await callback.answer()
         ref = f"CX-{random.randint(10000, 99999)}"
@@ -1053,16 +958,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         btns = [[InlineKeyboardButton("📩 Send Slip to Admin", url=admin_link)]] if admin_link else []
         await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
         return
-
-# =========================================================
-# TELEGRAM STARS PRECHECKOUT HANDLER
-# =========================================================
-@app.on_raw_update()
-async def handle_precheckout(client: Client, update, users, chats):
-    if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
 
 # =========================================================
 # SERVER INIT & RUNNER
