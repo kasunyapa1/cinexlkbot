@@ -12,7 +12,8 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery
+    CallbackQuery,
+    PreCheckoutQuery
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -287,6 +288,7 @@ async def kick_user_from_vip_channel(user_id: int):
         {"$set": {"expiry_date": datetime.utcnow() - timedelta(days=1)}}
     )
 
+# Telegram Stars (XTR) Direct JSON Invoice Sender
 async def send_tg_invoice(chat_id: int, title: str, description: str, payload: str, stars: int):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     body = {
@@ -294,6 +296,7 @@ async def send_tg_invoice(chat_id: int, title: str, description: str, payload: s
         "title": str(title)[:32],
         "description": str(description)[:255],
         "payload": str(payload),
+        "provider_token": "",  # Stars සඳහා Telegram Bot API හි provider_token empty string විය යුතුය
         "currency": "XTR",
         "prices": [{"label": str(title)[:30], "amount": int(stars)}]
     }
@@ -692,7 +695,6 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text(VIP_DETAILS_TEXT, reply_markup=get_vip_options_markup())
                 return
 
-            # RE-ROUTING OLD POSTS: Seamlessly redirect old VIP links to File Bot
             if param.startswith("vipfile_"):
                 mid = param.split("_")[1]
                 dl_btn = InlineKeyboardMarkup([
@@ -710,7 +712,6 @@ async def universal_message_handler(client: Client, message: Message):
                 )
                 return
 
-            # RE-ROUTING OLD POSTS: Seamlessly redirect old Step 2 links to File Bot
             if param.startswith("tok2_"):
                 mid = param.split("_")[2]
                 dl_btn = InlineKeyboardMarkup([
@@ -856,7 +857,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
-            # Update Button Text to "✅ Posted to Main (Re-post)" WITHOUT LOCKING
             try:
                 current_keyboard = callback.message.reply_markup.inline_keyboard
                 new_keyboard = []
@@ -912,7 +912,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         if sent:
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
-            # Update Button Text to "✅ Posted to VIP (Re-post)" WITHOUT LOCKING
             try:
                 current_keyboard = callback.message.reply_markup.inline_keyboard
                 new_keyboard = []
@@ -1015,14 +1014,16 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         return
 
 # =========================================================
-# TELEGRAM STARS PRECHECKOUT & SUCCESS
+# TELEGRAM STARS PRECHECKOUT & SUCCESS HANDLERS
 # =========================================================
-@app.on_raw_update()
-async def handle_precheckout(client: Client, update, users, chats):
-    if update.__class__.__name__ == "UpdateBotPrecheckoutQuery":
+@app.on_pre_checkout_query()
+async def process_pre_checkout_query(client: Client, query: PreCheckoutQuery):
+    try:
+        await query.answer(ok=True)
+    except Exception:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
         async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"pre_checkout_query_id": str(update.query_id), "ok": True})
+            await session.post(url, json={"pre_checkout_query_id": str(query.id), "ok": True})
 
 payment_filter = filters.create(lambda _, __, m: bool(getattr(m, "successful_payment", None)))
 
