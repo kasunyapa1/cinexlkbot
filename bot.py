@@ -53,8 +53,14 @@ BACKUP_CHANNEL_LINK = os.environ.get("BACKUP_CHANNEL_LINK", "").strip()
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "").strip()
 
-# VIP Price dynamically updated from Environment Variable
-VIP_LKR_PRICE = int(os.environ.get("VIP_LKR_PRICE", "1000"))
+# VIP Plans Configuration (Includes 1 Day Trial Pass)
+VIP_PLANS = {
+    "1d": {"label": "1 Day Trial", "days": 1, "price": int(os.environ.get("VIP_PRICE_1D", "99"))},
+    "1m": {"label": "1 Month", "days": 30, "price": int(os.environ.get("VIP_PRICE_1M", "399"))},
+    "3m": {"label": "3 Months", "days": 90, "price": int(os.environ.get("VIP_PRICE_3M", "999"))},
+    "6m": {"label": "6 Months", "days": 180, "price": int(os.environ.get("VIP_PRICE_6M", "1999"))},
+    "12m": {"label": "1 Year (12 Months)", "days": 365, "price": int(os.environ.get("VIP_PRICE_12M", "3999"))}
+}
 
 DEFAULT_POSTER = "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?q=80&w=1000&auto=format&fit=crop"
 
@@ -93,22 +99,31 @@ STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
 CACHED_BACKUP_LINK = BACKUP_CHANNEL_LINK
 
 # =========================================================
-# DYNAMIC VIP TEXT & BUTTON BUILDER (AUTO-CALCULATED)
+# DYNAMIC VIP MENU & BUTTON BUILDER
 # =========================================================
-def get_vip_info():
+def get_vip_selection_menu():
     text = (
-        "👑 <b>Cinex LK VIP Pass (Monthly - 30 Days)</b>\n\n"
+        "👑 <b>Cinex LK VIP Pass Membership</b>\n\n"
         "✨ <b>VIP සාමාජිකත්වයේ වාසි:</b>\n"
         "• කිසිදු දැන්වීමක් නොමැත (100% No Ads Direct Files)\n"
         "• Direct Files ක්ෂණිකව ලබාගත හැක\n"
-        "• VIP Channel එකට දින 30ක අඛණ්ඩ ප්‍රවේශය\n"
+        "• VIP Channel එකට අඛණ්ඩ ප්‍රවේශය\n"
         "• පැය 24ක Auto-Delete කාලයක් හිමිවීම\n\n"
-        f"💰 <b>මාසික ගාස්තුව:</b> <b>Rs. {VIP_LKR_PRICE} පමණි</b>\n\n"
-        "👇 VIP සාමාජිකත්වය ලබාගැනීමට පහත Button එක ඔබන්න:"
+        "👇 <b>ඔබට අවශ්‍ය VIP පැකේජය තෝරන්න:</b>"
     )
 
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🇱🇰 Get VIP Pass (Rs. {VIP_LKR_PRICE})", callback_data="pay_vip_bank")]
+        [
+            InlineKeyboardButton(f"⚡ 1 Day Trial - Rs. {VIP_PLANS['1d']['price']}", callback_data="buyplan_1d")
+        ],
+        [
+            InlineKeyboardButton(f"👑 1 Month - Rs. {VIP_PLANS['1m']['price']}", callback_data="buyplan_1m"),
+            InlineKeyboardButton(f"🔥 3 Months - Rs. {VIP_PLANS['3m']['price']}", callback_data="buyplan_3m")
+        ],
+        [
+            InlineKeyboardButton(f"⚡ 6 Months - Rs. {VIP_PLANS['6m']['price']}", callback_data="buyplan_6m"),
+            InlineKeyboardButton(f"🌟 1 Year - Rs. {VIP_PLANS['12m']['price']}", callback_data="buyplan_12m")
+        ]
     ])
 
     return text, markup
@@ -197,15 +212,15 @@ SAME_PAGE_GATE_HTML = """
     <title>Sponsor Verification - Cinex LK</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        * {{ box-sizing: border-box; }}
-        body, html {{ margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }}
-        #header-bar {{ height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }}
-        .step-label {{ font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }}
-        .countdown-wrap {{ display:flex; align-items:center; gap:8px; }}
-        .count-circle {{ width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }}
-        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }}
-        .btn:hover {{ background:#268d46; }}
-        #ad-frame {{ width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }}
+        * { box-sizing: border-box; }
+        body, html { margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }
+        #header-bar { height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }}
+        .step-label { font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }
+        .countdown-wrap { display:flex; align-items:center; gap:8px; }}
+        .count-circle { width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }
+        .btn { display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }
+        .btn:hover { background:#268d46; }
+        #ad-frame { width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }
     </style>
 </head>
 <body>
@@ -222,16 +237,16 @@ SAME_PAGE_GATE_HTML = """
     <iframe id="ad-frame" src="{ad_url}" sandbox="allow-forms allow-scripts allow-same-origin allow-popups"></iframe>
     <script>
         let sec = 8;
-        const timer = setInterval(() => {{
+        const timer = setInterval(() => {
             sec--;
             document.getElementById('count').innerText = sec;
-            if (sec <= 0) {{
+            if (sec <= 0) {
                 clearInterval(timer);
                 document.getElementById('count').style.display = 'none';
                 document.getElementById('status-text').innerText = '🎉 සත්‍යාපනය සාර්ථකයි!';
                 document.getElementById('doneBtn').style.display = 'block';
-            }}
-        }}, 1000);
+            }
+        }, 1000);
     </script>
 </body>
 </html>
@@ -623,13 +638,13 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ User <code>{target_uid}</code> VIP Channel එකෙන් Kick කර VIP සාමාජිකත්වය අවලංගු කරන ලදී.")
             return
 
-        # /addvip Command
+        # /addvip <USER_ID> [DAYS] Command (Flexible Duration)
         if text.startswith("/addvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
             args = text.split()
             if len(args) < 2:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt;</code>")
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt; [දින ගණන]</code>\nඋදා: <code>/addvip 123456789 1</code> හෝ <code>/addvip 123456789 30</code>")
                 return
             try:
                 target_user_id = int(args[1].strip())
@@ -637,8 +652,12 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text("❌ වැරදි User ID එකකි.")
                 return
 
+            days_to_add = 30
+            if len(args) >= 3 and args[2].isdigit():
+                days_to_add = int(args[2].strip())
+
             now = datetime.utcnow()
-            expiry_date = now + timedelta(days=30)
+            expiry_date = now + timedelta(days=days_to_add)
             await vip_users_col.update_one(
                 {"user_id": target_user_id},
                 {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": now}},
@@ -654,9 +673,9 @@ async def universal_message_handler(client: Client, message: Message):
                             link = res["result"]["invite_link"]
                             await client.send_message(
                                 chat_id=target_user_id,
-                                text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
+                                text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය දින {days_to_add}කට සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
                             )
-                            await message.reply_text(f"✅ User <code>{target_user_id}</code> VIP ලෙස සක්‍රිය කරන ලදී.\n📅 Expiry: <code>{expiry_date.strftime('%Y-%m-%d')}</code>")
+                            await message.reply_text(f"✅ User <code>{target_user_id}</code> වෙත දින {days_to_add}ක VIP සක්‍රිය කරන ලදී.\n📅 Expiry: <code>{expiry_date.strftime('%Y-%m-%d')}</code>")
                             return
                 await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
             except Exception as e:
@@ -669,7 +688,7 @@ async def universal_message_handler(client: Client, message: Message):
             param = parts[1].strip() if len(parts) > 1 else ""
 
             if param in ["buyvip", "vip"]:
-                vip_text, vip_markup = get_vip_info()
+                vip_text, vip_markup = get_vip_selection_menu()
                 await message.reply_text(vip_text, reply_markup=vip_markup)
                 return
 
@@ -796,7 +815,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL (Clean Free Download + Buy VIP Buttons)
+    # ACTION 1: POST TO MAIN CHANNEL (With Dynamic Button Update)
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -814,7 +833,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
-            # Update Button Text to "✅ Posted to Main (Re-post)" WITHOUT LOCKING
             try:
                 current_keyboard = callback.message.reply_markup.inline_keyboard
                 new_keyboard = []
@@ -834,7 +852,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL (Direct File Button)
+    # ACTION 2: POST TO VIP CHANNEL (With Dynamic Button Update)
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -870,7 +888,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         if sent:
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
-            # Update Button Text to "✅ Posted to VIP (Re-post)" WITHOUT LOCKING
             try:
                 current_keyboard = callback.message.reply_markup.inline_keyboard
                 new_keyboard = []
@@ -902,7 +919,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                     await client.send_message(user_id, "🎬 <b>Step 1 of 2:</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
                 elif param in ["buyvip", "vip"]:
-                    vip_text, vip_markup = get_vip_info()
+                    vip_text, vip_markup = get_vip_selection_menu()
                     await client.send_message(user_id, vip_text, reply_markup=vip_markup)
             else:
                 await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න.")
@@ -910,9 +927,16 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
-    # VIP BANK CALLBACK (Direct Bank Workflow)
-    if data == "pay_vip_bank":
+    # VIP PLAN SELECTED (1d, 1m, 3m, 6m, 12m)
+    if data.startswith("buyplan_"):
         await callback.answer()
+        plan_key = data.replace("buyplan_", "")
+        plan = VIP_PLANS.get(plan_key, VIP_PLANS["1m"])
+
+        price = plan["price"]
+        label = plan["label"]
+        days = plan["days"]
+
         ref = f"CX-{random.randint(10000, 99999)}"
         username = f"@{callback.from_user.username}" if callback.from_user.username else "No Username"
         full_name = f"{callback.from_user.first_name or ''} {callback.from_user.last_name or ''}".strip()
@@ -924,7 +948,9 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 "username": username,
                 "name": full_name,
                 "ref_code": ref,
-                "amount": VIP_LKR_PRICE,
+                "plan": label,
+                "days": days,
+                "amount": price,
                 "status": "pending",
                 "created_at": datetime.utcnow()
             }},
@@ -933,12 +959,13 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
         if ADMIN_USER_ID:
             admin_alert = (
-                "🔔 <b>නව Bank Payment ඉල්ලීමක්!</b>\n\n"
+                "🔔 <b>නව VIP Payment ඉල්ලීමක්!</b>\n\n"
                 f"👤 <b>පරිශීලකයා:</b> {html.escape(full_name)} ({username})\n"
                 f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
-                f"🔑 <b>Reference Code:</b> <code>{ref}</code>\n"
-                f"💰 <b>මුදල:</b> <code>Rs. {VIP_LKR_PRICE}</code>\n\n"
-                f"📌 <i>User slip එක එවූ පසු VIP දීමට:</i>\n<code>/addvip {user_id}</code>"
+                f"📦 <b>තෝරාගත් Plan එක:</b> <b>{label} ({days} Day{'s' if days > 1 else ''})</b>\n"
+                f"💰 <b>ගෙවිය යුතු මුදල:</b> <code>Rs. {price}</code>\n"
+                f"🔑 <b>Reference Code:</b> <code>{ref}</code>\n\n"
+                f"📌 <i>User slip එක එවූ පසු VIP දීමට:</i>\n<code>/addvip {user_id} {days}</code>"
             )
             try:
                 await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
@@ -947,8 +974,8 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
 
         admin_link = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
         text = (
-            "🇱🇰 <b>බැංකු තැන්පතු මඟින් VIP ලබාගැනීම:</b>\n\n"
-            f"💰 <b>ගෙවිය යුතු මුදල:</b> <code>Rs. {VIP_LKR_PRICE}</code>\n\n"
+            f"👑 <b>Cinex LK VIP Pass - {label}</b>\n\n"
+            f"💰 <b>ගෙවිය යුතු මුදල:</b> <code>Rs. {price}</code>\n\n"
             f"{BANK_DETAILS}\n\n"
             f"⚠️ <b>අනිවාර්යයි (Very Important):</b>\n"
             f"මුදල් තැන්පත් කරන විට Reference/Remarks සඳහා පහත ඔබගේ Unique Code එක ඇතුළත් කරන්න:\n"
