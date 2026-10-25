@@ -204,6 +204,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
 # =========================================================
 routes = web.RouteTableDef()
 
+# Fixed CSS brackets to avoid Python String Format 500 Internal Error
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -212,15 +213,15 @@ SAME_PAGE_GATE_HTML = """
     <title>Sponsor Verification - Cinex LK</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        * { box-sizing: border-box; }
-        body, html { margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }
-        #header-bar { height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }}
-        .step-label { font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }
-        .countdown-wrap { display:flex; align-items:center; gap:8px; }}
-        .count-circle { width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }
-        .btn { display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }
-        .btn:hover { background:#268d46; }
-        #ad-frame { width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }
+        * {{ box-sizing: border-box; }}
+        body, html {{ margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }}
+        #header-bar {{ height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }}
+        .step-label {{ font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }}
+        .countdown-wrap {{ display:flex; align-items:center; gap:8px; }}
+        .count-circle {{ width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }}
+        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }}
+        .btn:hover {{ background:#268d46; }}
+        #ad-frame {{ width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }}
     </style>
 </head>
 <body>
@@ -237,16 +238,16 @@ SAME_PAGE_GATE_HTML = """
     <iframe id="ad-frame" src="{ad_url}" sandbox="allow-forms allow-scripts allow-same-origin allow-popups"></iframe>
     <script>
         let sec = 8;
-        const timer = setInterval(() => {
+        const timer = setInterval(() => {{
             sec--;
             document.getElementById('count').innerText = sec;
-            if (sec <= 0) {
+            if (sec <= 0) {{
                 clearInterval(timer);
                 document.getElementById('count').style.display = 'none';
                 document.getElementById('status-text').innerText = '🎉 සත්‍යාපනය සාර්ථකයි!';
                 document.getElementById('doneBtn').style.display = 'block';
-            }
-        }, 1000);
+            }}
+        }}, 1000);
     </script>
 </body>
 </html>
@@ -258,20 +259,26 @@ async def root_ping(request):
 
 @routes.get("/gate/step1/{user_id}/{msg_id}")
 async def gate_step1(request):
-    user_id = request.match_info['user_id']
-    msg_id = request.match_info['msg_id']
-    token = f"tok1_{user_id}_{msg_id}"
-    html_page = SAME_PAGE_GATE_HTML.format(step="1", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
-    return web.Response(text=html_page, content_type='text/html')
+    try:
+        user_id = request.match_info['user_id']
+        msg_id = request.match_info['msg_id']
+        token = f"tok1_{user_id}_{msg_id}"
+        html_page = SAME_PAGE_GATE_HTML.format(step="1", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
+        return web.Response(text=html_page, content_type='text/html')
+    except Exception as e:
+        return web.Response(text=f"Gate Step 1 Error: {e}", status=500)
 
 @routes.get("/gate/step2/{user_id}/{msg_id}")
 async def gate_step2(request):
-    user_id = request.match_info['user_id']
-    msg_id = request.match_info['msg_id']
-    token = f"tok2_{user_id}_{msg_id}"
-    target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
-    html_page = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=target_delivery_bot, token=token)
-    return web.Response(text=html_page, content_type='text/html')
+    try:
+        user_id = request.match_info['user_id']
+        msg_id = request.match_info['msg_id']
+        token = f"tok2_{user_id}_{msg_id}"
+        target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
+        html_page = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=target_delivery_bot, token=token)
+        return web.Response(text=html_page, content_type='text/html')
+    except Exception as e:
+        return web.Response(text=f"Gate Step 2 Error: {e}", status=500)
 
 @routes.post("/filebot_webhook")
 async def file_bot_webhook_handler(request):
@@ -638,7 +645,7 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ User <code>{target_uid}</code> VIP Channel එකෙන් Kick කර VIP සාමාජිකත්වය අවලංගු කරන ලදී.")
             return
 
-        # /addvip <USER_ID> [DAYS] Command (Flexible Duration)
+        # /addvip <USER_ID> [DAYS] Command
         if text.startswith("/addvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -744,7 +751,7 @@ async def universal_message_handler(client: Client, message: Message):
             return
 
         # =========================================================
-        # MOVIE REQUEST SYSTEM (/req OR TEXT)
+        # MOVIE REQUEST SYSTEM
         # =========================================================
         req_movie = ""
         if text.startswith("/req"):
@@ -815,7 +822,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL (With Dynamic Button Update)
+    # ACTION 1: POST TO MAIN CHANNEL
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -852,7 +859,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL (With Dynamic Button Update)
+    # ACTION 2: POST TO VIP CHANNEL
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
