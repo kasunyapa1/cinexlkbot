@@ -129,6 +129,67 @@ def get_vip_selection_menu():
     return text, markup
 
 # =========================================================
+# MOVIE CATALOG / LIST WITH PAGINATION
+# =========================================================
+async def get_movies_page(page: int = 1, user_id: int = 0):
+    limit = 10
+    skip = (page - 1) * limit
+    total_movies = await files_col.count_documents({})
+
+    if total_movies == 0:
+        return "📂 <b>දැනට Movies කිසිවක් Library එකෙහි නොමැත.</b>", None
+
+    total_pages = (total_movies + limit - 1) // limit
+    page = max(1, min(page, total_pages))
+
+    cursor = files_col.find({}).sort("_id", -1).skip(skip).limit(limit)
+    movies = await cursor.to_list(length=limit)
+
+    is_vip = await is_vip_user(user_id) if user_id else False
+    tag = "👑 VIP Direct Access" if is_vip else "📥 Free Access"
+
+    text = (
+        f"🎬 <b>Cinex LK Movie Library ({tag})</b>\n"
+        f"📄 <b>Page:</b> <code>{page} / {total_pages}</code> | <b>Total Movies:</b> <code>{total_movies}</code>\n\n"
+        "👇 <b>චිත්‍රපටය ලබාගැනීමට අදාළ අංකය හෝ නම ඔබන්න:</b>\n\n"
+    )
+
+    buttons = []
+    current_row = []
+
+    target_bot = FILE_BOT_USERNAME if is_vip else BOT_USERNAME
+
+    for idx, doc in enumerate(movies, 1):
+        global_idx = skip + idx
+        raw_name = doc.get("file_name", "Movie")
+        clean_t = clean_movie_title(raw_name)[0]
+        mid = doc.get("message_id")
+
+        text += f"<b>{global_idx}.</b> {html.escape(clean_t[:35])}\n"
+
+        target_param = f"vipfile_{mid}" if is_vip else f"adstep1_{mid}"
+        btn_url = f"https://t.me/{target_bot}?start={target_param}"
+
+        current_row.append(InlineKeyboardButton(f"🎬 {global_idx}", url=btn_url))
+        if len(current_row) == 5:
+            buttons.append(current_row)
+            current_row = []
+
+    if current_row:
+        buttons.append(current_row)
+
+    # Navigation Buttons (Prev / Next)
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"page_{page - 1}"))
+    nav_row.append(InlineKeyboardButton(f"📄 {page}/{total_pages}", callback_data="pages_info"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page_{page + 1}"))
+
+    buttons.append(nav_row)
+    return text, InlineKeyboardMarkup(buttons)
+
+# =========================================================
 # FILE BOT DELIVERY & HTTP DISPATCHER
 # =========================================================
 async def send_file_bot_text(chat_id: int, text: str):
@@ -204,7 +265,6 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
 # =========================================================
 routes = web.RouteTableDef()
 
-# Fixed CSS brackets to avoid Python String Format 500 Internal Error
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -567,6 +627,12 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(stats_msg)
             return
 
+        # /movies or /list Command (Dynamic Movie Catalog for Users)
+        if text in ["/movies", "/list"]:
+            catalog_text, catalog_markup = await get_movies_page(page=1, user_id=user_id)
+            await message.reply_text(catalog_text, reply_markup=catalog_markup)
+            return
+
         # /storage Command
         if text == "/storage":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
@@ -740,14 +806,20 @@ async def universal_message_handler(client: Client, message: Message):
                 )
                 return
 
+            welcome_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎬 All Movies List (චිත්‍රපට නාමාවලිය)", callback_data="show_movies_list")],
+                [InlineKeyboardButton("👑 Buy VIP Membership", callback_data="show_vip_menu")]
+            ])
+
             welcome_text = (
                 "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
-                "📌 <b>ප්‍රධාන විධානයන් (Commands):</b>\n"
-                "• 🎬 <b>Movie එකක් ඉල්ලීමට:</b> <code>/req &lt;Movie Name&gt;</code> (හෝ නම එවන්න)\n"
+                "📌 <b>ප්‍රධාන පහසුකම්:</b>\n"
+                "• 🎬 <b>Movies List එක බැලීමට:</b> <code>/movies</code>\n"
+                "• 📩 <b>Movie එකක් ඉල්ලීමට:</b> <code>/req &lt;Movie Name&gt;</code> (හෝ නම එවන්න)\n"
                 "• 👑 <b>VIP සාමාජිකත්වය:</b> <code>/start vip</code>\n\n"
                 f"📢 නිල Channel එක: {MAIN_CHANNEL}"
             )
-            await message.reply_text(welcome_text)
+            await message.reply_text(welcome_text, reply_markup=welcome_markup)
             return
 
         # =========================================================
@@ -804,6 +876,35 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
     if not BOT_USERNAME:
         me = await client.get_me()
         BOT_USERNAME = me.username
+
+    # ACTION: SHOW MOVIES LIST FROM BUTTON
+    if data == "show_movies_list":
+        await callback.answer()
+        c_text, c_markup = await get_movies_page(page=1, user_id=user_id)
+        await callback.message.reply_text(c_text, reply_markup=c_markup)
+        return
+
+    # ACTION: SHOW VIP MENU
+    if data == "show_vip_menu":
+        await callback.answer()
+        vip_text, vip_markup = get_vip_selection_menu()
+        await callback.message.reply_text(vip_text, reply_markup=vip_markup)
+        return
+
+    # ACTION: PAGINATION NAVIGATION (page_1, page_2, etc.)
+    if data.startswith("page_"):
+        await callback.answer()
+        try:
+            req_page = int(data.replace("page_", ""))
+            c_text, c_markup = await get_movies_page(page=req_page, user_id=user_id)
+            await callback.message.edit_text(c_text, reply_markup=c_markup)
+        except Exception:
+            pass
+        return
+
+    if data == "pages_info":
+        await callback.answer("📄 අදාළ Movie අංකය උඩ click කර ලබාගන්න.", show_alert=False)
+        return
 
     # ACTION: KICK VIP USER
     if data.startswith("kick_"):
@@ -929,7 +1030,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     vip_text, vip_markup = get_vip_selection_menu()
                     await client.send_message(user_id, vip_text, reply_markup=vip_markup)
             else:
-                await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න.")
+                await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න. නාමාවලිය සඳහා: /movies")
         else:
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
