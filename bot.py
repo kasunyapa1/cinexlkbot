@@ -129,7 +129,7 @@ def get_vip_selection_menu():
     return text, markup
 
 # =========================================================
-# UNIVERSAL MOVIE CATALOG (ALL CHANNEL POSTED MOVIES)
+# MOVIE CATALOG (ONLY SHOWS MOVIES POSTED TO CHANNELS)
 # =========================================================
 async def get_movies_page(page: int = 1, user_id: int = 0):
     limit = 10
@@ -137,12 +137,12 @@ async def get_movies_page(page: int = 1, user_id: int = 0):
     
     is_vip = await is_vip_user(user_id) if user_id else False
     
-    # Shows all active movies in DB (covers old posts + future posts)
-    query = {}
+    # Only show movies actually published to Main or VIP Channel
+    query = {"$or": [{"posted_main": True}, {"posted_vip": True}, {"is_posted": True}]}
     total_movies = await files_col.count_documents(query)
 
     if total_movies == 0:
-        return "📂 <b>දැනට Library එකෙහි Movies කිසිවක් නොමැත.</b>", None
+        return "📂 <b>දැනට Channels වෙත නිල වශයෙන් Publish කරන ලද Movies නොමැත.</b>", None
 
     total_pages = (total_movies + limit - 1) // limit
     page = max(1, min(page, total_pages))
@@ -153,8 +153,8 @@ async def get_movies_page(page: int = 1, user_id: int = 0):
     tag = "👑 VIP Direct Access" if is_vip else "📥 Free Access"
 
     text = (
-        f"🎬 <b>Cinex LK Movie Library ({tag})</b>\n"
-        f"📄 <b>Page:</b> <code>{page} / {total_pages}</code> | <b>Total Movies:</b> <code>{total_movies}</code>\n\n"
+        f"🎬 <b>Cinex LK Movies Catalog ({tag})</b>\n"
+        f"📄 <b>Page:</b> <code>{page} / {total_pages}</code> | <b>Published Movies:</b> <code>{total_movies}</code>\n\n"
         "👇 <b>චිත්‍රපටය ලබාගැනීමට අදාළ අංකය ඔබන්න:</b>\n\n"
     )
 
@@ -258,7 +258,6 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
                     asyncio.create_task(auto_delete_file_task(chat_id, ids_to_del, delay))
                     return True
                 else:
-                    # Storage එකෙන් අයින් කර ඇත්නම් Database එකෙන්ද Auto-Delete වේ
                     await files_col.delete_one({"message_id": int(message_id)})
                     await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇති බැවින් Catalog එකෙන්ද ඉවත් කරන ලදී.</b>")
     except Exception as e:
@@ -553,7 +552,7 @@ async def create_storage_preview(client: Client, message: Message):
 
     await files_col.update_one(
         {"message_id": msg_id},
-        {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0}},
+        {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0, "is_posted": False}},
         upsert=True
     )
 
@@ -616,6 +615,7 @@ async def universal_message_handler(client: Client, message: Message):
                 return
             
             total_movies = await files_col.count_documents({})
+            posted_movies = await files_col.count_documents({"$or": [{"posted_main": True}, {"posted_vip": True}, {"is_posted": True}]})
             total_vip = await vip_users_col.count_documents({"expiry_date": {"$gt": datetime.utcnow()}})
             
             pipeline = [{"$group": {"_id": None, "total_downloads": {"$sum": "$download_count"}}}]
@@ -624,20 +624,21 @@ async def universal_message_handler(client: Client, message: Message):
 
             stats_msg = (
                 "📊 <b>Cinex LK Storage & Bot Statistics:</b>\n\n"
-                f"🎬 <b>Total Movies in Storage:</b> <code>{total_movies}</code>\n"
-                f"📥 <b>Total Movie Downloads:</b> <code>{total_dl}</code>\n"
+                f"📦 <b>Total in Storage:</b> <code>{total_movies}</code>\n"
+                f"🎬 <b>Published Movies:</b> <code>{posted_movies}</code>\n"
+                f"📥 <b>Total Downloads:</b> <code>{total_dl}</code>\n"
                 f"👑 <b>Active VIP Members:</b> <code>{total_vip}</code>\n\n"
-                f"📦 <i>Storage Channel ID:</i> <code>{STORAGE_CHANNEL_RAW}</code>"
+                f"📦 <i>Storage ID:</i> <code>{STORAGE_CHANNEL_RAW}</code>"
             )
             await message.reply_text(stats_msg)
             return
 
-        # /syncmovies Command (ADMIN ONLY - Fixes All Old Movies Into List)
+        # /syncmovies Command (ADMIN ONLY)
         if text == "/syncmovies":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-            res = await files_col.update_many({}, {"$set": {"posted_main": True, "posted_vip": True}})
-            await message.reply_text(f"✅ සාර්ථකයි! කලින් දාපු පැරණි Movies <code>{res.modified_count}</code>ක් නිල ලැයිස්තුවට Sync කරන ලදී.")
+            res = await files_col.update_many({}, {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}})
+            await message.reply_text(f"✅ සාර්ථකයි! දැනට තැන්පත් කර ඇති Movies <code>{res.modified_count}</code>ක් නිල Catalog එකට Sync කරන ලදී.")
             return
 
         # /movies or /list Command
@@ -936,7 +937,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL (Sets posted_main = True)
+    # ACTION 1: POST TO MAIN CHANNEL (Sets is_posted = True)
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -953,7 +954,8 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             else:
                 await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
             
-            await files_col.update_one({"message_id": msg_id}, {"$set": {"posted_main": True, "posted_vip": True}})
+            # Formally activates movie into catalog list
+            await files_col.update_one({"message_id": msg_id}, {"$set": {"is_posted": True, "posted_main": True}})
 
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
@@ -976,7 +978,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL (Sets posted_vip = True)
+    # ACTION 2: POST TO VIP CHANNEL (Sets is_posted = True)
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -1010,7 +1012,8 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     err_desc = res.get("description", "")
 
         if sent:
-            await files_col.update_one({"message_id": msg_id}, {"$set": {"posted_vip": True}})
+            # Formally activates movie into catalog list
+            await files_col.update_one({"message_id": msg_id}, {"$set": {"is_posted": True, "posted_vip": True}})
 
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
