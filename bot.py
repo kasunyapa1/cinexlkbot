@@ -129,34 +129,37 @@ def get_vip_selection_menu():
     return text, markup
 
 # =========================================================
-# MOVIE CATALOG / LIST WITH PAGINATION
+# UNIVERSAL MOVIE CATALOG (ALL CHANNEL POSTED MOVIES)
 # =========================================================
 async def get_movies_page(page: int = 1, user_id: int = 0):
     limit = 10
     skip = (page - 1) * limit
-    total_movies = await files_col.count_documents({})
+    
+    is_vip = await is_vip_user(user_id) if user_id else False
+    
+    # Shows all active movies in DB (covers old posts + future posts)
+    query = {}
+    total_movies = await files_col.count_documents(query)
 
     if total_movies == 0:
-        return "📂 <b>දැනට Movies කිසිවක් Library එකෙහි නොමැත.</b>", None
+        return "📂 <b>දැනට Library එකෙහි Movies කිසිවක් නොමැත.</b>", None
 
     total_pages = (total_movies + limit - 1) // limit
     page = max(1, min(page, total_pages))
 
-    cursor = files_col.find({}).sort("_id", -1).skip(skip).limit(limit)
+    cursor = files_col.find(query).sort("_id", -1).skip(skip).limit(limit)
     movies = await cursor.to_list(length=limit)
 
-    is_vip = await is_vip_user(user_id) if user_id else False
     tag = "👑 VIP Direct Access" if is_vip else "📥 Free Access"
 
     text = (
         f"🎬 <b>Cinex LK Movie Library ({tag})</b>\n"
         f"📄 <b>Page:</b> <code>{page} / {total_pages}</code> | <b>Total Movies:</b> <code>{total_movies}</code>\n\n"
-        "👇 <b>චිත්‍රපටය ලබාගැනීමට අදාළ අංකය හෝ නම ඔබන්න:</b>\n\n"
+        "👇 <b>චිත්‍රපටය ලබාගැනීමට අදාළ අංකය ඔබන්න:</b>\n\n"
     )
 
     buttons = []
     current_row = []
-
     target_bot = FILE_BOT_USERNAME if is_vip else BOT_USERNAME
 
     for idx, doc in enumerate(movies, 1):
@@ -255,7 +258,9 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
                     asyncio.create_task(auto_delete_file_task(chat_id, ids_to_del, delay))
                     return True
                 else:
-                    await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇත.</b>")
+                    # Storage එකෙන් අයින් කර ඇත්නම් Database එකෙන්ද Auto-Delete වේ
+                    await files_col.delete_one({"message_id": int(message_id)})
+                    await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය Storage එකෙන් ඉවත් කර ඇති බැවින් Catalog එකෙන්ද ඉවත් කරන ලදී.</b>")
     except Exception as e:
         await send_file_bot_text(chat_id, f"❌ Delivery Error: {e}")
     return False
@@ -627,7 +632,15 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(stats_msg)
             return
 
-        # /movies or /list Command (Dynamic Movie Catalog for Users)
+        # /syncmovies Command (ADMIN ONLY - Fixes All Old Movies Into List)
+        if text == "/syncmovies":
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            res = await files_col.update_many({}, {"$set": {"posted_main": True, "posted_vip": True}})
+            await message.reply_text(f"✅ සාර්ථකයි! කලින් දාපු පැරණි Movies <code>{res.modified_count}</code>ක් නිල ලැයිස්තුවට Sync කරන ලදී.")
+            return
+
+        # /movies or /list Command
         if text in ["/movies", "/list"]:
             catalog_text, catalog_markup = await get_movies_page(page=1, user_id=user_id)
             await message.reply_text(catalog_text, reply_markup=catalog_markup)
@@ -923,7 +936,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL
+    # ACTION 1: POST TO MAIN CHANNEL (Sets posted_main = True)
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -939,6 +952,9 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 await client.send_photo(chat_id=target, photo=callback.message.photo.file_id, caption=caption, reply_markup=main_markup)
             else:
                 await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
+            
+            await files_col.update_one({"message_id": msg_id}, {"$set": {"posted_main": True, "posted_vip": True}})
+
             await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
             try:
@@ -960,7 +976,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL
+    # ACTION 2: POST TO VIP CHANNEL (Sets posted_vip = True)
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -994,6 +1010,8 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                     err_desc = res.get("description", "")
 
         if sent:
+            await files_col.update_one({"message_id": msg_id}, {"$set": {"posted_vip": True}})
+
             await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
 
             try:
