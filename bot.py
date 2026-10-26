@@ -97,6 +97,61 @@ STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
 CACHED_BACKUP_LINK = BACKUP_CHANNEL_LINK
 
 # =========================================================
+# VIP BACKGROUND AUTO-KICK & 3-DAY REMINDER WORKER
+# =========================================================
+async def auto_kick_expired_vips():
+    while True:
+        try:
+            now = datetime.utcnow()
+
+            # 1. දින 3කට කලින් REMINDER පණිවිඩය යැවීම (1 Day pass වලට නොයවයි)
+            three_days_later = now + timedelta(days=3)
+            reminder_candidates = await vip_users_col.find({
+                "initial_days": {"$gt": 1},
+                "expiry_date": {"$gt": now, "$lte": three_days_later},
+                "reminded_3d": {"$ne": True}
+            }).to_list(length=100)
+
+            for u in reminder_candidates:
+                uid = u.get("user_id")
+                exp = u.get("expiry_date")
+                rem_days = max(1, (exp - now).days) if isinstance(exp, datetime) else 3
+                rem_text = (
+                    "⏳ <b>Cinex LK VIP Pass Expiry Reminder:</b>\n\n"
+                    f"ඔබගේ Cinex LK VIP සාමාජිකත්වය තවත් <b>දින {rem_days}කින්</b> අවසන් වීමට නියමිතයි.\n\n"
+                    "👑 බාධාවකින් තොරව VIP Direct Files සහ චැනල් ප්‍රවේශය දිගටම ලබාගැනීමට පහත Button එක මඟින් ඔබගේ සාමාජිකත්වය අලුත් කරගන්න 👇"
+                )
+                markup = {"inline_keyboard": [[{"text": "👑 Renew VIP Pass", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}]]}
+                res = await send_tg_message(uid, rem_text, markup)
+                if res.get("ok"):
+                    await vip_users_col.update_one({"user_id": uid}, {"$set": {"reminded_3d": True}})
+
+            # 2. කල් ඉකුත් වූ පසු AUTO-KICK කිරීම (1 Day Trial ඇතුළු සියලු දෙනා)
+            expired_users = await vip_users_col.find({
+                "expiry_date": {"$lt": now},
+                "is_kicked": {"$ne": True}
+            }).to_list(length=100)
+
+            for u in expired_users:
+                uid = u.get("user_id")
+                if uid:
+                    await kick_user_from_vip_channel(uid)
+                    await vip_users_col.update_one({"user_id": uid}, {"$set": {"is_kicked": True}})
+                    try:
+                        renew_markup = {"inline_keyboard": [[{"text": "👑 Renew VIP Membership", "url": f"https://t.me/{BOT_USERNAME}?start=buyvip"}]]}
+                        await send_tg_message(
+                            uid,
+                            "⌛ <b>ඔබගේ Cinex LK VIP සාමාජිකත්ව කාලය අවසන් විය.</b>\n\nVIP Direct Files සහ VIP Channel ප්‍රවේශය නැවත සක්‍රිය කරගැනීමට පහත Button එක ඔබන්න 👇",
+                            renew_markup
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"Auto-kick worker error: {e}")
+        
+        await asyncio.sleep(600)  # සෑම විනාඩි 10කට වරක් ස්වයංක්‍රීයව පරික්ෂා කෙරේ
+
+# =========================================================
 # DYNAMIC VIP MENU & BUTTON BUILDER
 # =========================================================
 def get_vip_selection_menu():
@@ -654,47 +709,8 @@ async def universal_message_handler(client: Client, message: Message):
             )
             await message.reply_text(
                 f"🧹 <b>සම්පූර්ණ Catalog Reset එක සාර්ථකයි!</b>\n\n"
-                f"Database Movies <code>{res.modified_count}</code>ම Catalog එකෙන් ඉවත් කරන ලදී.\n\n"
-                f"📌 දැන් Main Channel එක Auto-Scan කර පෝස්ට් කළ Movies පමණක් එකතු කිරීමට: <code>/scanmain</code> භාවිත කරන්න."
+                f"Database Movies <code>{res.modified_count}</code>ම Catalog එකෙන් ඉවත් කරන ලදී."
             )
-            return
-
-        # /scanmain Command (AUTO-SCAN MAIN CHANNEL & PUBLISH POSTED MOVIES ONLY)
-        if text == "/scanmain":
-            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
-                return
-
-            status_msg = await message.reply_text("🔍 <b>Main Channel එක Scan කරමින් පවතී... කරුණාකර මොහොතක් රැඳී සිටින්න.</b>")
-            found_ids = set()
-
-            try:
-                # Scan last 200 posts in Main Channel
-                async for ch_msg in client.get_chat_history(MAIN_CHANNEL, limit=200):
-                    if ch_msg.reply_markup and ch_msg.reply_markup.inline_keyboard:
-                        for row in ch_msg.reply_markup.inline_keyboard:
-                            for btn in row:
-                                if btn.url:
-                                    match = re.search(r"start=adstep1_(\d+)", btn.url)
-                                    if match:
-                                        found_ids.add(int(match.group(1)))
-
-                if not found_ids:
-                    await status_msg.edit_text("⚠️ <b>Main Channel එකෙහි Download Buttons සහිත Movies කිසිවක් හමු නොවීය.</b>")
-                    return
-
-                res = await files_col.update_many(
-                    {"message_id": {"$in": list(found_ids)}},
-                    {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}}
-                )
-
-                await status_msg.edit_text(
-                    f"🎉 <b>Main Channel Scan සාර්ථකයි!</b>\n\n"
-                    f"🎬 Channel එකෙහි සජීවීව ඇති Movies: <code>{len(found_ids)}</code>\n"
-                    f"✅ Catalog එකට නිල වශයෙන් Add කළ Movies: <code>{res.modified_count}</code>\n\n"
-                    f"<i>(Storage එකේ පමණක් ඇති කිසිදු ගොනුවක් Catalog එකට ඇතුළත් නොවීය!)</i>"
-                )
-            except Exception as e:
-                await status_msg.edit_text(f"❌ Scan Fail: {e}")
             return
 
         # /publishrange <START_ID> <END_ID> Command
@@ -703,7 +719,7 @@ async def universal_message_handler(client: Client, message: Message):
                 return
             args = text.split()
             if len(args) < 3:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publishrange &lt;START_ID&gt; &lt;END_ID&gt;</code>\nඋදා: <code>/publishrange 1 500</code>")
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publishrange &lt;START_ID&gt; &lt;END_ID&gt;</code>\nඋදා: <code>/publishrange 64 220</code>")
                 return
             try:
                 start_id = int(args[1].strip())
@@ -716,7 +732,7 @@ async def universal_message_handler(client: Client, message: Message):
                 {"message_id": {"$gte": start_id, "$lte": end_id}},
                 {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}}
             )
-            await message.reply_text(f"✅ සාර්ථකයි! ID <code>{start_id}</code> සිට <code>{end_id}</code> දක්වා ඇති Movies <code>{res.modified_count}</code>ක් Catalog එකට Publish කරන ලදී.")
+            await message.reply_text(f"✅ සාර්ථකයි! ID <code>{start_id}</code> සිට <code>{end_id}</code> දක්වා Movies <code>{res.modified_count}</code>ක් Catalog එකට Publish කරන ලදී.")
             return
 
         # /publish <ID1> <ID2> ... Command
@@ -725,7 +741,7 @@ async def universal_message_handler(client: Client, message: Message):
                 return
             args = text.split()[1:]
             if not args:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publish &lt;ID&gt;</code> හෝ <code>/publishrange 1 500</code>")
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publish &lt;ID&gt;</code>")
                 return
 
             ids = [int(a) for a in args if a.isdigit()]
@@ -863,7 +879,14 @@ async def universal_message_handler(client: Client, message: Message):
             expiry_date = now + timedelta(days=days_to_add)
             await vip_users_col.update_one(
                 {"user_id": target_user_id},
-                {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": now}},
+                {"$set": {
+                    "user_id": target_user_id,
+                    "expiry_date": expiry_date,
+                    "joined_at": now,
+                    "initial_days": days_to_add,
+                    "is_kicked": False,
+                    "reminded_3d": False
+                }},
                 upsert=True
             )
             try:
@@ -1278,6 +1301,9 @@ async def main():
     print(f"🌐 Web Engine Live on port {PORT}", flush=True)
 
     await setup_file_bot_webhook()
+
+    # Start the automated 10-minute expiry kick & 3-day reminder worker
+    asyncio.create_task(auto_kick_expired_vips())
 
     await idle()
     await app.stop()
