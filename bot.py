@@ -53,7 +53,6 @@ BACKUP_CHANNEL_LINK = os.environ.get("BACKUP_CHANNEL_LINK", "").strip()
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").replace("@", "").strip()
 
-# VIP Plans Configuration (Includes 1 Day Trial Pass)
 VIP_PLANS = {
     "1d": {"label": "1 Day Trial", "days": 1, "price": int(os.environ.get("VIP_PRICE_1D", "99"))},
     "1m": {"label": "1 Month", "days": 30, "price": int(os.environ.get("VIP_PRICE_1M", "399"))},
@@ -80,7 +79,6 @@ PORT = int(os.environ.get("PORT", "8080"))
 FREE_USER_DELETE_DURATION = int(os.environ.get("FREE_USER_DELETE_DURATION", "43200"))
 VIP_USER_DELETE_DURATION = int(os.environ.get("VIP_USER_DELETE_DURATION", "86400"))
 
-# Active Pyrogram Client (Main Bot Only)
 app = Client(
     "cinex_stable_bot",
     api_id=API_ID,
@@ -222,6 +220,11 @@ async def auto_delete_file_task(chat_id: int, msg_ids: list, delay: int):
     await send_file_bot_text(chat_id, "🗑️ <b>ප්‍රකාශන හිමිකම් ආරක්ෂාව මත චිත්‍රපටය Chat එකෙන් ඉවත් කරන ලදී.</b>")
 
 async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = False):
+    doc = await files_col.find_one({"message_id": int(message_id)})
+    if not doc or not doc.get("is_posted"):
+        await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය තවමත් නිල වශයෙන් Channels වෙත Publish කර නොමැත.</b>")
+        return False
+
     delay = VIP_USER_DELETE_DURATION if is_vip else FREE_USER_DELETE_DURATION
     time_label = "පැය 24කින්" if is_vip else "පැය 12කින්"
 
@@ -356,11 +359,21 @@ async def file_bot_webhook_handler(request):
 
             if param.startswith("vipfile_"):
                 mid = int(param.split("_")[1])
+                doc = await files_col.find_one({"message_id": int(mid)})
+                if not doc or not doc.get("is_posted"):
+                    await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
+                    return web.Response(text="ok", status=200)
+
                 await send_file_bot_text(chat_id, "👑 <b>VIP Direct File:</b> ගොනුව එවමින් පවතී...")
                 asyncio.create_task(deliver_file_bot_movie(chat_id, mid, is_vip=True))
 
             elif param.startswith("tok2_"):
                 mid = int(param.split("_")[2])
+                doc = await files_col.find_one({"message_id": int(mid)})
+                if not doc or not doc.get("is_posted"):
+                    await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
+                    return web.Response(text="ok", status=200)
+
                 await send_file_bot_text(chat_id, "🎉 <b>සත්‍යාපනය සාර්ථකයි!</b> මෙන්න ඔබගේ චිත්‍රපටය:")
                 asyncio.create_task(deliver_file_bot_movie(chat_id, mid, is_vip=False))
 
@@ -550,7 +563,7 @@ async def create_storage_preview(client: Client, message: Message):
 
     await files_col.update_one(
         {"message_id": msg_id},
-        {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0, "is_posted": False}},
+        {"$set": {"file_name": file_name, "file_size": media.file_size, "message_id": msg_id, "created_at": datetime.utcnow()}, "$setOnInsert": {"download_count": 0, "is_posted": False, "posted_main": False, "posted_vip": False}},
         upsert=True
     )
 
@@ -631,23 +644,116 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(stats_msg)
             return
 
-        # /cleancatalog Command
-        if text == "/cleancatalog":
+        # /resetallcatalog Command
+        if text == "/resetallcatalog":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
             res = await files_col.update_many(
-                {"posted_main": {"$ne": True}, "posted_vip": {"$ne": True}},
-                {"$set": {"is_posted": False}}
+                {},
+                {"$set": {"is_posted": False, "posted_main": False, "posted_vip": False}}
             )
-            await message.reply_text(f"🧹 Catalog Reset Completed!\nචැනල් වලට post නොකරපු Storage files <code>{res.modified_count}</code>ක් Catalog එකෙන් ඉවත් කරන ලදී. දැන් Catalog එකේ පෙන්වන්නේ Channels වලට දැමූ Movies පමණි.")
+            await message.reply_text(
+                f"🧹 <b>සම්පූර්ණ Catalog Reset එක සාර්ථකයි!</b>\n\n"
+                f"Database Movies <code>{res.modified_count}</code>ම Catalog එකෙන් ඉවත් කරන ලදී.\n\n"
+                f"📌 දැන් Main Channel එක Auto-Scan කර පෝස්ට් කළ Movies පමණක් එකතු කිරීමට: <code>/scanmain</code> භාවිත කරන්න."
+            )
             return
 
-        # /syncmovies Command
-        if text == "/syncmovies":
+        # /scanmain Command (AUTO-SCAN MAIN CHANNEL & PUBLISH POSTED MOVIES ONLY)
+        if text == "/scanmain":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-            res = await files_col.update_many({}, {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}})
-            await message.reply_text(f"✅ සියලු Movies <code>{res.modified_count}</code>ක් Catalog එකට Force Sync කරන ලදී.")
+
+            status_msg = await message.reply_text("🔍 <b>Main Channel එක Scan කරමින් පවතී... කරුණාකර මොහොතක් රැඳී සිටින්න.</b>")
+            found_ids = set()
+
+            try:
+                # Scan last 200 posts in Main Channel
+                async for ch_msg in client.get_chat_history(MAIN_CHANNEL, limit=200):
+                    if ch_msg.reply_markup and ch_msg.reply_markup.inline_keyboard:
+                        for row in ch_msg.reply_markup.inline_keyboard:
+                            for btn in row:
+                                if btn.url:
+                                    match = re.search(r"start=adstep1_(\d+)", btn.url)
+                                    if match:
+                                        found_ids.add(int(match.group(1)))
+
+                if not found_ids:
+                    await status_msg.edit_text("⚠️ <b>Main Channel එකෙහි Download Buttons සහිත Movies කිසිවක් හමු නොවීය.</b>")
+                    return
+
+                res = await files_col.update_many(
+                    {"message_id": {"$in": list(found_ids)}},
+                    {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}}
+                )
+
+                await status_msg.edit_text(
+                    f"🎉 <b>Main Channel Scan සාර්ථකයි!</b>\n\n"
+                    f"🎬 Channel එකෙහි සජීවීව ඇති Movies: <code>{len(found_ids)}</code>\n"
+                    f"✅ Catalog එකට නිල වශයෙන් Add කළ Movies: <code>{res.modified_count}</code>\n\n"
+                    f"<i>(Storage එකේ පමණක් ඇති කිසිදු ගොනුවක් Catalog එකට ඇතුළත් නොවීය!)</i>"
+                )
+            except Exception as e:
+                await status_msg.edit_text(f"❌ Scan Fail: {e}")
+            return
+
+        # /publishrange <START_ID> <END_ID> Command
+        if text.startswith("/publishrange"):
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            args = text.split()
+            if len(args) < 3:
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publishrange &lt;START_ID&gt; &lt;END_ID&gt;</code>\nඋදා: <code>/publishrange 1 500</code>")
+                return
+            try:
+                start_id = int(args[1].strip())
+                end_id = int(args[2].strip())
+            except ValueError:
+                await message.reply_text("❌ වලංගු Message ID අංක ලබා දෙන්න.")
+                return
+
+            res = await files_col.update_many(
+                {"message_id": {"$gte": start_id, "$lte": end_id}},
+                {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}}
+            )
+            await message.reply_text(f"✅ සාර්ථකයි! ID <code>{start_id}</code> සිට <code>{end_id}</code> දක්වා ඇති Movies <code>{res.modified_count}</code>ක් Catalog එකට Publish කරන ලදී.")
+            return
+
+        # /publish <ID1> <ID2> ... Command
+        if text.startswith("/publish") and not text.startswith("/publishrange"):
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            args = text.split()[1:]
+            if not args:
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publish &lt;ID&gt;</code> හෝ <code>/publishrange 1 500</code>")
+                return
+
+            ids = [int(a) for a in args if a.isdigit()]
+            if not ids:
+                await message.reply_text("❌ වලංගු Message ID හමු නොවීය.")
+                return
+
+            res = await files_col.update_many(
+                {"message_id": {"$in": ids}},
+                {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}}
+            )
+            await message.reply_text(f"✅ සාර්ථකයි! Movies <code>{res.modified_count}</code>ක් Catalog එකට Add කරන ලදී.")
+            return
+
+        # /unpublish <ID1> <ID2> ... Command
+        if text.startswith("/unpublish"):
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                return
+            args = text.split()[1:]
+            if not args:
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/unpublish &lt;Message_ID&gt;</code>")
+                return
+            ids = [int(a) for a in args if a.isdigit()]
+            res = await files_col.update_many(
+                {"message_id": {"$in": ids}},
+                {"$set": {"is_posted": False, "posted_main": False, "posted_vip": False}}
+            )
+            await message.reply_text(f"🚫 Movies <code>{res.modified_count}</code>ක් Catalog එකෙන් ඉවත් කරන ලදී.")
             return
 
         # /movies or /list Command
@@ -674,8 +780,8 @@ async def universal_message_handler(client: Client, message: Message):
                 clean_t = clean_movie_title(doc.get("file_name", "Movie"))[0]
                 mid = doc.get("message_id")
                 dl_count = doc.get("download_count", 0)
-                is_p = "✅" if doc.get("is_posted") else "❌"
-                list_text += f"{idx}. {is_p} <b>{html.escape(clean_t[:30])}</b> (ID: <code>{mid}</code> | 📥 {dl_count})\n"
+                is_p = "✅ Live" if doc.get("is_posted") else "❌ Storage Only"
+                list_text += f"{idx}. [{is_p}] <b>{html.escape(clean_t[:25])}</b> (ID: <code>{mid}</code> | 📥 {dl_count})\n"
 
             if total_movies > 30:
                 list_text += f"\n<i>...සහ තවත් චිත්‍රපට {total_movies - 30}ක් ඇත.</i>"
@@ -791,6 +897,11 @@ async def universal_message_handler(client: Client, message: Message):
 
             if param.startswith("vipfile_"):
                 mid = param.split("_")[1]
+                doc = await files_col.find_one({"message_id": int(mid)})
+                if not doc or not doc.get("is_posted"):
+                    await message.reply_text("❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
+                    return
+
                 dl_btn = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📥 Download Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}")]
                 ])
@@ -808,6 +919,11 @@ async def universal_message_handler(client: Client, message: Message):
 
             if param.startswith("tok2_"):
                 mid = param.split("_")[2]
+                doc = await files_col.find_one({"message_id": int(mid)})
+                if not doc or not doc.get("is_posted"):
+                    await message.reply_text("❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
+                    return
+
                 dl_btn = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📥 Get Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=tok2_{mid}")]
                 ])
@@ -823,6 +939,11 @@ async def universal_message_handler(client: Client, message: Message):
 
             if param.startswith("adstep1_"):
                 mid = param.split("_")[1]
+                doc = await files_col.find_one({"message_id": int(mid)})
+                if not doc or not doc.get("is_posted"):
+                    await message.reply_text("❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
+                    return
+
                 step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                 await message.reply_text(
                     "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
