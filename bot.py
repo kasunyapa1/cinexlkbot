@@ -149,7 +149,7 @@ async def auto_kick_expired_vips():
         except Exception as e:
             print(f"Auto-kick worker error: {e}")
         
-        await asyncio.sleep(600)  # සෑම විනාඩි 10කට වරක් ස්වයංක්‍රීයව පරික්ෂා කෙරේ
+        await asyncio.sleep(600)
 
 # =========================================================
 # DYNAMIC VIP MENU & BUTTON BUILDER
@@ -661,6 +661,10 @@ async def create_storage_preview(client: Client, message: Message):
 @app.on_message()
 async def universal_message_handler(client: Client, message: Message):
     if not message.chat:
+        return
+
+    # Bots ලා හෝ Bot විසින්ම යවන පණිවිඩ Movie Request ලෙස සැකසීම වැළැක්වීම
+    if message.from_user and message.from_user.is_bot:
         return
 
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
