@@ -592,12 +592,13 @@ async def fetch_metadata(raw_name: str):
                             "year": data.get("Year", year or "N/A"),
                             "rating": data.get("imdbRating", "N/A"),
                             "genres": data.get("Genre", "Cinema"),
+                            "language": data.get("Language", "English"),
                             "plot": data.get("Plot", "Directly uploaded to Cinex LK library."),
                             "poster": poster
                         }
     except Exception:
         pass
-    return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
+    return {"title": title.title(), "year": year or "N/A", "rating": "N/A", "genres": "Cinema", "language": "English", "plot": "Directly uploaded to Cinex LK library.", "poster": None}
 
 # =========================================================
 # CREATE PREVIEW POST IN STORAGE CHANNEL
@@ -628,12 +629,14 @@ async def create_storage_preview(client: Client, message: Message):
     safe_title = html.escape(str(meta['title']))
     safe_year = html.escape(str(meta['year']))
     safe_genres = html.escape(str(meta['genres']))
+    safe_language = html.escape(str(meta.get('language', 'English')))
     safe_plot = html.escape(str(meta['plot'])[:250])
 
     caption = (
         f"🎬 <b>{safe_title} ({safe_year})</b>\n\n"
         f"⭐ <b>IMDb Rating:</b> <code>{rating_str}</code>\n"
         f"🎭 <b>Genres:</b> <code>{safe_genres}</code>\n"
+        f"🌐 <b>Language:</b> <code>{safe_language}</code>\n"
         f"📦 <b>Size:</b> <code>{size_mb} MB</code>\n\n"
         f"📖 <b>Plot:</b> {safe_plot}...\n\n"
         "👇 <b>චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:</b>"
