@@ -321,10 +321,11 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER, AD GATE & FILE BOT WEBHOOK
+# WEB SERVER, TAB-REDIRECT AD GATE & FILE BOT WEBHOOK
 # =========================================================
 routes = web.RouteTableDef()
 
+# Updated: No iframes! Ad opens cleanly in a new tab, guaranteeing 100% Monetag tracking on Chrome/Edge.
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -334,40 +335,96 @@ SAME_PAGE_GATE_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * {{ box-sizing: border-box; }}
-        body, html {{ margin:0; padding:0; height:100%; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#0b1118; color:white; }}
-        #header-bar {{ height:75px; background:#16222f; border-bottom:2px solid #233446; display:flex; align-items:center; justify-content:space-between; padding:0 15px; position:fixed; top:0; left:0; right:0; z-index:9999; box-shadow:0 4px 15px rgba(0,0,0,0.5); }}
-        .step-label {{ font-size:12px; font-weight:bold; color:#5da9e9; letter-spacing:1px; }}
-        .countdown-wrap {{ display:flex; align-items:center; gap:8px; }}
-        .count-circle {{ width:42px; height:42px; border-radius:50%; border:3px solid #5da9e9; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; color:#5da9e9; background:#0b1118; }}
-        .btn {{ display:none; background:#2fa955; color:white; text-decoration:none; padding:10px 18px; border-radius:10px; font-weight:bold; font-size:14px; transition:0.2s; white-space:nowrap; cursor:pointer; }}
-        .btn:hover {{ background:#268d46; }}
-        #ad-frame {{ width:100%; height:calc(100% - 75px); margin-top:75px; border:none; }}
+        body, html {{ 
+            margin: 0; 
+            padding: 0; 
+            min-height: 100vh; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            background: #0b1118; 
+            color: white; 
+        }}
+        .card {{
+            background: #16222f;
+            border: 1px solid #233446;
+            border-radius: 16px;
+            padding: 30px 20px;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }}
+        .step-label {{ font-size: 13px; font-weight: bold; color: #5da9e9; letter-spacing: 1px; margin-bottom: 8px; }}
+        h2 {{ margin: 0 0 12px; font-size: 20px; color: #ffffff; }}
+        p {{ font-size: 14px; color: #90a4ae; margin-bottom: 24px; line-height: 1.5; }}
+        .count-circle {{ 
+            width: 60px; 
+            height: 60px; 
+            border-radius: 50%; 
+            border: 4px solid #5da9e9; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-weight: bold; 
+            font-size: 24px; 
+            color: #5da9e9; 
+            margin: 0 auto 20px; 
+            background: #0b1118; 
+        }}
+        .btn {{ 
+            display: inline-block; 
+            width: 100%; 
+            padding: 14px; 
+            border-radius: 10px; 
+            font-weight: bold; 
+            font-size: 15px; 
+            text-decoration: none; 
+            cursor: pointer; 
+            transition: 0.2s; 
+            border: none;
+        }}
+        .btn-ad {{ background: #2b7de9; color: white; margin-bottom: 12px; }}
+        .btn-ad:hover {{ background: #1a68d1; }}
+        .btn-done {{ display: none; background: #2fa955; color: white; }}
+        .btn-done:hover {{ background: #268d46; }}
     </style>
 </head>
 <body>
-    <div id="header-bar">
-        <div>
-            <div class="step-label">STEP {step} OF 2</div>
-            <div style="font-size:13px; color:#cfd8dc;" id="status-text">Ad එක නරඹමින් තත්පර 8ක් රැඳී සිටින්න...</div>
-        </div>
-        <div class="countdown-wrap">
-            <div class="count-circle" id="count">8</div>
-            <a id="doneBtn" class="btn" href="https://t.me/{bot_username}?start={token}" target="_top">✅ Go to Telegram</a>
-        </div>
+    <div class="card">
+        <div class="step-label">VERIFICATION STEP {step} OF 2</div>
+        <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
+        <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
+        
+        <div class="count-circle" id="count">8</div>
+
+        <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" onclick="startTimer()">🔗 View Sponsor Ad</a>
+        <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
     </div>
-    <iframe id="ad-frame" src="{ad_url}" sandbox="allow-forms allow-scripts allow-same-origin allow-popups"></iframe>
+
     <script>
-        let sec = 8;
-        const timer = setInterval(() => {{
-            sec--;
-            document.getElementById('count').innerText = sec;
-            if (sec <= 0) {{
-                clearInterval(timer);
-                document.getElementById('count').style.display = 'none';
-                document.getElementById('status-text').innerText = '🎉 සත්‍යාපනය සාර්ථකයි!';
-                document.getElementById('doneBtn').style.display = 'block';
-            }}
-        }}, 1000);
+        let timerStarted = false;
+        function startTimer() {{
+            if (timerStarted) return;
+            timerStarted = true;
+            document.getElementById('adBtn').innerText = '⏳ Ad එක නරඹමින් සිටී...';
+            document.getElementById('adBtn').style.opacity = '0.6';
+            document.getElementById('adBtn').style.pointerEvents = 'none';
+
+            let sec = 8;
+            const timer = setInterval(() => {{
+                sec--;
+                document.getElementById('count').innerText = sec;
+                if (sec <= 0) {{
+                    clearInterval(timer);
+                    document.getElementById('count').style.display = 'none';
+                    document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය වෙත යා හැක.';
+                    document.getElementById('adBtn').style.display = 'none';
+                    document.getElementById('doneBtn').style.display = 'block';
+                }}
+            }}, 1000);
+        }}
     </script>
 </body>
 </html>
@@ -663,7 +720,7 @@ async def universal_message_handler(client: Client, message: Message):
     if not message.chat:
         return
 
-    # Bots ලා හෝ Bot විසින්ම යවන පණිවිඩ Movie Request ලෙස සැකසීම වැළැක්වීම
+    # Bots ලා හෝ Bot විසින්ම යවන පණිවිඩ Movie Request ලෙස වැරදියට සැකසීම වැළැක්වීම
     if message.from_user and message.from_user.is_bot:
         return
 
