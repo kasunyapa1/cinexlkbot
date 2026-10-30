@@ -321,11 +321,22 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER, TAB-REDIRECT AD GATE & FILE BOT WEBHOOK
+# WEB SERVER, TAB-REDIRECT AD GATE, MONETAG SW & FILE BOT WEBHOOK
 # =========================================================
 routes = web.RouteTableDef()
 
-# Updated: No iframes! Ad opens cleanly in a new tab, guaranteeing 100% Monetag tracking on Chrome/Edge.
+# Monetag Service Worker Route for Site Verification
+@routes.get("/sw.js")
+async def monetag_sw_js(request):
+    js_content = """self.options = {
+    "domain": "3nbf4.com",
+    "zoneId": 12155474
+}
+self.lary = ""
+importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
+"""
+    return web.Response(text=js_content, content_type="application/javascript")
+
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
