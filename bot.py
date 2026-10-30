@@ -104,7 +104,7 @@ async def auto_kick_expired_vips():
         try:
             now = datetime.utcnow()
 
-            # 1. දින 3කට කලින් REMINDER පණිවිඩය යැවීම (1 Day pass වලට නොයවයි)
+            # 1. දින 3කට කලින් REMINDER පණිවිඩය යැවීම
             three_days_later = now + timedelta(days=3)
             reminder_candidates = await vip_users_col.find({
                 "initial_days": {"$gt": 1},
@@ -126,7 +126,7 @@ async def auto_kick_expired_vips():
                 if res.get("ok"):
                     await vip_users_col.update_one({"user_id": uid}, {"$set": {"reminded_3d": True}})
 
-            # 2. කල් ඉකුත් වූ පසු AUTO-KICK කිරීම (1 Day Trial ඇතුළු සියලු දෙනා)
+            # 2. කල් ඉකුත් වූ පසු AUTO-KICK කිරීම
             expired_users = await vip_users_col.find({
                 "expiry_date": {"$lt": now},
                 "is_kicked": {"$ne": True}
@@ -337,6 +337,12 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
+# Fake bait script to catch ad blockers
+@routes.get("/ads.js")
+async def fake_ad_script(request):
+    return web.Response(text="var canRunAds = true;", content_type="application/javascript")
+
+# Upgraded Gate with Brave Shields & AdBlock Detection
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -344,6 +350,7 @@ SAME_PAGE_GATE_HTML = """
     <meta charset="utf-8">
     <title>Sponsor Verification - Cinex LK</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/ads.js"></script>
     <style>
         * {{ box-sizing: border-box; }}
         body, html {{ 
@@ -400,10 +407,50 @@ SAME_PAGE_GATE_HTML = """
         .btn-ad:hover {{ background: #1a68d1; }}
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
+
+        /* AdBlock / Brave Shields Warning Modal */
+        #adblock-overlay {{
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(11, 17, 24, 0.95);
+            z-index: 99999;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }}
+        .adblock-box {{
+            background: #1e293b;
+            border: 2px solid #ef4444;
+            border-radius: 16px;
+            padding: 25px;
+            max-width: 400px;
+            text-align: center;
+            box-shadow: 0 10px 40px rgba(239, 68, 68, 0.3);
+        }}
+        .adblock-box h3 {{ color: #ef4444; margin-top: 0; font-size: 20px; }}
+        .adblock-box p {{ font-size: 14px; color: #cbd5e1; line-height: 1.6; text-align: left; }}
+        .btn-reload {{
+            background: #ef4444; color: white; margin-top: 15px;
+        }}
     </style>
 </head>
 <body>
-    <div class="card">
+    <div id="adblock-overlay">
+        <div class="adblock-box">
+            <h3>⚠️ Ad Blocker / Brave Shields Detected!</h3>
+            <p>
+                චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර ඔබගේ Browser එකෙහි <b>Brave Shields</b> හෝ <b>Ad Blocker එක OFF (Pause)</b> කර පහත Button එක මඟින් Reload කරන්න.<br><br>
+                🦁 <b>Brave Users:</b> Search bar එක ළඟ ඇති Lion Icon එක click කර <b>Shields = Down (OFF)</b> කරන්න.
+            </p>
+            <button class="btn btn-reload" onclick="location.reload()">🔄 Reload Page</button>
+        </div>
+    </div>
+
+    <!-- Hidden Bait to catch CSS hiding AdBlockers -->
+    <div id="ad-banner-check" class="adsbox ad-zone ad-banner pub_300x250 pub_728x90" style="position: absolute; top: -1000px; left: -1000px; width: 1px; height: 1px;"></div>
+
+    <div class="card" id="main-card">
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
         <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
@@ -415,8 +462,31 @@ SAME_PAGE_GATE_HTML = """
     </div>
 
     <script>
+        let adblockDetected = false;
+
+        function triggerAdBlockNotice() {{
+            adblockDetected = true;
+            document.getElementById('adblock-overlay').style.display = 'flex';
+        }}
+
+        // Check 1: Bait Script
+        if (typeof canRunAds === 'undefined') {{
+            triggerAdBlockNotice();
+        }}
+
+        // Check 2: Element Hiding / Brave Shields DOM Block Check
+        window.addEventListener('load', () => {{
+            setTimeout(() => {{
+                const bait = document.getElementById('ad-banner-check');
+                if (!bait || bait.offsetParent === null || bait.offsetHeight === 0 || bait.offsetWidth === 0) {{
+                    triggerAdBlockNotice();
+                }}
+            }}, 300);
+        }});
+
         let timerStarted = false;
         function startTimer() {{
+            if (adblockDetected) return;
             if (timerStarted) return;
             timerStarted = true;
             document.getElementById('adBtn').innerText = '⏳ Ad එක නරඹමින් සිටී...';
@@ -1134,7 +1204,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         await callback.message.reply_text(vip_text, reply_markup=vip_markup)
         return
 
-    # ACTION: PAGINATION NAVIGATION (page_1, page_2, etc.)
+    # ACTION: PAGINATION NAVIGATION
     if data.startswith("page_"):
         await callback.answer()
         try:
@@ -1283,7 +1353,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
-    # VIP PLAN SELECTED (1d, 1m, 3m, 6m, 12m)
+    # VIP PLAN SELECTED
     if data.startswith("buyplan_"):
         await callback.answer()
         plan_key = data.replace("buyplan_", "")
