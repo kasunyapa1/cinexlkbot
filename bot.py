@@ -319,7 +319,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER & AD-GATEWAY (STRICT FREEZE ON BLOCKER)
+# WEB SERVER & AD-GATEWAY (BULLETPROOF HYBRID TIME LOCK)
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -334,7 +334,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# STRICT TIMER FREEZE ON ADBLOCK / VIRUS GUARD DETECTION
+# BULLETPROOF HYBRID TIME-LOCK GATEWAY
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -369,6 +369,20 @@ SAME_PAGE_GATE_HTML = """
         h2 {{ margin: 0 0 12px; font-size: 20px; color: #ffffff; }}
         p {{ font-size: 14px; color: #90a4ae; margin-bottom: 18px; line-height: 1.5; }}
         
+        .count-circle {{ 
+            width: 60px; 
+            height: 60px; 
+            border-radius: 50%; 
+            border: 4px solid #5da9e9; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-weight: bold; 
+            font-size: 24px; 
+            color: #5da9e9; 
+            margin: 0 auto 20px; 
+            background: #0b1118; 
+        }}
         .btn {{ 
             display: block; 
             width: 100%; 
@@ -382,7 +396,7 @@ SAME_PAGE_GATE_HTML = """
             border: none;
             box-sizing: border-box;
         }}
-        .btn-ad {{ background: #2b7de9; color: white; }}
+        .btn-ad {{ background: #2b7de9; color: white; margin-bottom: 12px; }}
         .btn-ad:hover {{ background: #1a68d1; }}
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
@@ -405,19 +419,6 @@ SAME_PAGE_GATE_HTML = """
             color: #fca5a5;
         }}
 
-        /* Antivirus / Virus Guard Freeze Warning Box */
-        #block-freeze-box {{
-            display: none;
-            background: #2a1215;
-            border: 2px solid #ef4444;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 20px;
-            text-align: left;
-        }}
-        #block-freeze-box h4 {{ margin: 0 0 8px 0; color: #ef4444; font-size: 15px; }}
-        #block-freeze-box p {{ margin: 0; color: #fca5a5; font-size: 13px; line-height: 1.5; }}
-
         .antivirus-note {{
             background: rgba(35, 52, 70, 0.45);
             border: 1px dashed #34495e;
@@ -430,6 +431,18 @@ SAME_PAGE_GATE_HTML = """
             color: #94a3b8;
         }}
         .antivirus-note b {{ color: #e2e8f0; }}
+
+        #brave-block-box {{
+            display: none;
+            background: #2a1215;
+            border: 2px solid #ef4444;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            text-align: left;
+        }}
+        #brave-block-box h4 {{ margin: 0 0 8px 0; color: #ef4444; font-size: 15px; }}
+        #brave-block-box p {{ margin: 0; color: #fca5a5; font-size: 13px; line-height: 1.5; }}
     </style>
 </head>
 <body>
@@ -438,18 +451,19 @@ SAME_PAGE_GATE_HTML = """
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
 
-        <!-- Freeze Warning Shown When AdBlock / Virus Guard is detected -->
-        <div id="block-freeze-box">
-            <h4>⛔ Verification Frozen (අවහිර කර ඇත)</h4>
+        <div id="brave-block-box">
+            <h4>🚫 Brave Browser Blocked!</h4>
             <p>
-                ඔබගේ Browser එකෙහි <b>Brave Shields, Ad Blocker හෝ Virus Guard (ESET Web Shield)</b> මඟින් Ad Link එක Block කර ඇති බැවින් Countdown එක Freeze කර ඇත.<br><br>
-                චිත්‍රපටය නොමිලේ ලබාගැනීමට කරුණාකර Web Protection එක <b>තාවකාලිකව Pause/OFF කර</b> පිටුව Reload කරන්න.
+                Brave Browser මඟින් Ads අවහිර කරන බැවින් නොමිලේ චිත්‍රපට ලබාගත නොහැක.<br><br>
+                කරුණාකර මෙම පිටුව <b>Google Chrome</b> එකෙන් විවෘත කරන්න.
             </p>
         </div>
 
         <div id="normal-flow">
             <div id="status-box"></div>
             <p id="desc">පහත Button එක ඔබා Ad එක <b>තත්පර 15ක් නරඹන්න</b>. ඉන්පසු ආපසු මෙම පිටුවට පැමිණ චිත්‍රපටය ලබාගන්න.</p>
+
+            <div class="count-circle" id="count">15</div>
 
             <button id="adBtn" class="btn btn-ad" onclick="handleClickAd()">🔗 View Sponsor Ad (15 Seconds)</button>
             <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
@@ -462,31 +476,18 @@ SAME_PAGE_GATE_HTML = """
     </div>
 
     <script>
-        let isPermanentlyFrozen = false;
-
-        function freezeSystem() {{
-            isPermanentlyFrozen = true;
-            document.getElementById('block-freeze-box').style.display = 'block';
+        // Block Brave completely
+        if (navigator.brave) {{
+            document.getElementById('brave-block-box').style.display = 'block';
             document.getElementById('normal-flow').style.display = 'none';
         }}
 
-        // 1. Brave Browser Check
-        if (navigator.brave) {{
-            freezeSystem();
-        }}
-
-        // 2. Network Endpoint Block Check (Catches Virus Guard & AdBlock Sinkholes)
-        fetch('{ad_url}', {{ method: 'HEAD', mode: 'no-cors', cache: 'no-store' }}).catch(() => {{
-            freezeSystem();
-        }});
-
         let adClickTimestamp = 0;
         let isCompleted = false;
+        let activeInterval = null;
         const REQUIRED_SECONDS = 15;
 
         function handleClickAd() {{
-            if (isPermanentlyFrozen) return;
-
             adClickTimestamp = Date.now();
             window.open('{ad_url}', '_blank');
 
@@ -496,23 +497,48 @@ SAME_PAGE_GATE_HTML = """
             statusBox.innerHTML = '⏳ <b>Ad එක විවෘත විය:</b> කරුණාකර තත්පර 15ක් එම පිටුවේ රැඳී සිට නැවත මෙම Tab එකට එන්න.';
             
             document.getElementById('adBtn').innerText = '🔄 නැවත Ad එක Open කරන්න';
+
+            if (activeInterval) clearInterval(activeInterval);
+            activeInterval = setInterval(updateTimerDisplay, 500);
         }}
 
-        // Verify strictly when user returns
+        function updateTimerDisplay() {{
+            if (isCompleted || adClickTimestamp === 0) return;
+
+            const timeSpentSeconds = Math.floor((Date.now() - adClickTimestamp) / 1000);
+            const remaining = REQUIRED_SECONDS - timeSpentSeconds;
+
+            if (remaining > 0) {{
+                document.getElementById('count').innerText = remaining;
+            }} else {{
+                unlockSuccess();
+            }}
+        }}
+
+        function unlockSuccess() {{
+            if (isCompleted) return;
+            isCompleted = true;
+            if (activeInterval) clearInterval(activeInterval);
+
+            document.getElementById('count').style.display = 'none';
+            document.getElementById('status-box').style.display = 'none';
+            document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:';
+            document.getElementById('adBtn').style.display = 'none';
+            document.getElementById('doneBtn').style.display = 'block';
+        }}
+
+        // When user switches tabs back on Mobile Chrome or PC
         function verifyReturn() {{
-            if (isPermanentlyFrozen || isCompleted || adClickTimestamp === 0) return;
+            if (isCompleted || adClickTimestamp === 0) return;
 
             const timeSpentSeconds = Math.floor((Date.now() - adClickTimestamp) / 1000);
             const statusBox = document.getElementById('status-box');
 
             if (timeSpentSeconds >= REQUIRED_SECONDS) {{
-                isCompleted = true;
-                statusBox.style.display = 'none';
-                document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:';
-                document.getElementById('adBtn').style.display = 'none';
-                document.getElementById('doneBtn').style.display = 'block';
+                unlockSuccess();
             }} else {{
                 const remaining = REQUIRED_SECONDS - timeSpentSeconds;
+                document.getElementById('count').innerText = remaining;
                 statusBox.className = 'warn';
                 statusBox.style.display = 'block';
                 statusBox.innerHTML = '⚠️ <b>කාලය මදි!</b> ඔබ රැඳී සිටියේ තත්පර ' + timeSpentSeconds + 'ක් පමණි. කරුණාකර Ad එක තව <b>තත්පර ' + remaining + 'ක්</b> නරඹන්න.';
