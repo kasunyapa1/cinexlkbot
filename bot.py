@@ -275,7 +275,7 @@ async def auto_delete_file_task(chat_id: int, msg_ids: list, delay: int):
 async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = False):
     doc = await files_col.find_one({"message_id": int(message_id)})
     if not doc or not doc.get("is_posted"):
-        await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
+        await send_file_bot_text(chat_id, "❌ <b>මෙම චිත්‍රපටය තවමත් නිල වශයෙන් Channels වෙත Publish කර නොමැත.</b>")
         return False
 
     delay = VIP_USER_DELETE_DURATION if is_vip else FREE_USER_DELETE_DURATION
@@ -319,7 +319,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER, STEP GATEWAY (WITH FLOATING GUIDE) & FILE BOT WEBHOOK
+# WEB SERVER, ROBUST AD-GATEWAY & FILE BOT WEBHOOK
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -334,6 +334,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
+# SOLID GATEWAY: KILLS BRAVE, SMOOTH FLOW ON CHROME / FIREFOX / SAFARI
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -368,36 +369,6 @@ SAME_PAGE_GATE_HTML = """
         h2 {{ margin: 0 0 12px; font-size: 20px; color: #ffffff; }}
         p {{ font-size: 14px; color: #90a4ae; margin-bottom: 20px; line-height: 1.5; }}
         
-        /* Floating Guidance Box */
-        #guide-box {{
-            display: none;
-            background: #0f2b48;
-            border: 1px solid #1e5a96;
-            border-radius: 12px;
-            padding: 14px;
-            margin-bottom: 18px;
-            text-align: left;
-            animation: fadeIn 0.3s ease-in-out;
-        }}
-        #guide-box h4 {{
-            margin: 0 0 6px 0;
-            color: #5da9e9;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }}
-        #guide-box p {{
-            margin: 0;
-            color: #cbd5e1;
-            font-size: 13px;
-            line-height: 1.4;
-        }}
-        @keyframes fadeIn {{
-            from {{ opacity: 0; transform: translateY(-5px); }}
-            to {{ opacity: 1; transform: translateY(0); }}
-        }}
-
         .count-circle {{ 
             width: 60px; 
             height: 60px; 
@@ -428,6 +399,28 @@ SAME_PAGE_GATE_HTML = """
         .btn-ad:hover {{ background: #1a68d1; }}
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
+
+        /* BRAVE BLOCKER SCREEN */
+        #brave-block-box {{
+            display: none;
+            background: #2a1215;
+            border: 2px solid #ef4444;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            text-align: left;
+        }}
+        #brave-block-box h4 {{
+            margin: 0 0 8px 0;
+            color: #ef4444;
+            font-size: 16px;
+        }}
+        #brave-block-box p {{
+            margin: 0;
+            color: #fca5a5;
+            font-size: 13px;
+            line-height: 1.5;
+        }}
     </style>
 </head>
 <body>
@@ -436,32 +429,44 @@ SAME_PAGE_GATE_HTML = """
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
 
-        <!-- Active Instruction Box shown after clicking -->
-        <div id="guide-box">
-            <h4>💡 උපදෙස:</h4>
-            <p>Ad එක අලුත් Tab එකකින් විවෘත වේ. <b>තත්පර 8ක් එය නරඹා නැවත මෙම Tab එක වෙත පැමිණෙන්න (Return here).</b></p>
+        <!-- Brave users get blocked permanently right here -->
+        <div id="brave-block-box">
+            <h4>🚫 Brave Browser Blocked!</h4>
+            <p>
+                Brave Browser මඟින් Sponsor Ads සහ සත්‍යාපනය අවහිර කරන බැවින් මෙහිදී චිත්‍රපට ලබාගත නොහැක.<br><br>
+                කරුණාකර මෙම පිටුව <b>Google Chrome</b> හෝ වෙනත් සාමාන්‍ය Browser එකකින් විවෘත කරන්න.
+            </p>
         </div>
 
-        <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
-        
-        <div class="count-circle" id="count">8</div>
+        <div id="normal-flow">
+            <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
+            
+            <div class="count-circle" id="count">8</div>
 
-        <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" rel="noopener noreferrer" onclick="startVerificationFlow()">🔗 View Sponsor Ad</a>
-        <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+            <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" rel="noopener noreferrer" onclick="startTimer()">🔗 View Sponsor Ad</a>
+            <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+        </div>
     </div>
 
     <script>
-        let isStarted = false;
+        // STRICT BRAVE CHECK: If Brave browser, kill the page immediately
+        async function checkAndBlockBrave() {{
+            try {{
+                if (navigator.brave && await navigator.brave.isBrave()) {{
+                    document.getElementById('brave-block-box').style.display = 'block';
+                    document.getElementById('normal-flow').style.display = 'none';
+                }}
+            }} catch(e) {{}}
+        }}
+        checkAndBlockBrave();
 
-        function startVerificationFlow() {{
+        // PURE, BULLETPROOF TIMER FOR CHROME AND OTHER BROWSERS
+        let isStarted = false;
+        function startTimer() {{
             if (isStarted) return;
             isStarted = true;
 
-            // Show Floating Instruction Box
-            document.getElementById('guide-box').style.display = 'block';
-            document.getElementById('desc').style.display = 'none';
-
-            document.getElementById('adBtn').innerText = '⏳ Ad එක විවෘත විය... (නැවත මෙම Tab එකට එන්න)';
+            document.getElementById('adBtn').innerText = '⏳ Ad එක විවෘත විය... රැඳී සිටින්න';
             document.getElementById('adBtn').style.opacity = '0.6';
             document.getElementById('adBtn').style.pointerEvents = 'none';
 
@@ -472,8 +477,6 @@ SAME_PAGE_GATE_HTML = """
                 if (sec <= 0) {{
                     clearInterval(timer);
                     document.getElementById('count').style.display = 'none';
-                    document.getElementById('guide-box').style.display = 'none';
-                    document.getElementById('desc').style.display = 'block';
                     document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය ලබාගත හැක.';
                     document.getElementById('adBtn').style.display = 'none';
                     document.getElementById('doneBtn').style.display = 'block';
