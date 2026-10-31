@@ -337,6 +337,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
+# Upgraded Bulletproof Brave & AdBlock Detector Gate
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -401,81 +402,87 @@ SAME_PAGE_GATE_HTML = """
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
 
-        /* Unblockable Native Warning Modal */
-        #blocker-modal {{
+        /* Unblockable Warning Box Inside Card */
+        #adblock-alert-box {{
             display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(11, 17, 24, 0.98);
-            z-index: 999999;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }}
-        .blocker-content {{
-            background: #1c1917;
+            background: #2a1215;
             border: 2px solid #ef4444;
-            border-radius: 16px;
-            padding: 25px;
-            max-width: 420px;
-            text-align: center;
-            box-shadow: 0 10px 40px rgba(239, 68, 68, 0.25);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            text-align: left;
         }}
-        .blocker-content h3 {{ color: #ef4444; margin-top: 0; font-size: 20px; }}
-        .blocker-content p {{ font-size: 14px; color: #e2e8f0; line-height: 1.6; text-align: left; }}
-        .btn-reload {{ background: #ef4444; color: white; margin-top: 15px; }}
+        #adblock-alert-box h4 {{
+            margin: 0 0 8px 0;
+            color: #ef4444;
+            font-size: 16px;
+        }}
+        #adblock-alert-box p {{
+            margin: 0;
+            color: #fca5a5;
+            font-size: 13px;
+            line-height: 1.5;
+        }}
+        .btn-reload {{
+            background: #ef4444;
+            color: white;
+            margin-top: 12px;
+            padding: 10px;
+            font-size: 13px;
+        }}
     </style>
+
+    <!-- Ad Network Bait Script (Brave Shields instantly blocks this file) -->
+    <script src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js" onerror="shieldDetected()" async></script>
 </head>
 <body>
-    <div id="blocker-modal">
-        <div class="blocker-content">
-            <h3>⚠️ Brave Shields / AdBlock Detected!</h3>
-            <p>
-                චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර ඔබගේ Browser එකෙහි <b>Brave Shields</b> හෝ <b>Ad Blocker එක OFF කර</b> පිටුව Reload කරන්න.<br><br>
-                🦁 <b>Brave Users:</b> Search bar එකේ ඇති Lion icon එක click කර <b>Shields = Down (OFF)</b> කරන්න.
-            </p>
-            <button class="btn btn-reload" onclick="location.reload()">🔄 Reload Page</button>
-        </div>
-    </div>
 
     <div class="card" id="mainCard">
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
-        <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
-        
-        <div class="count-circle" id="count">8</div>
 
-        <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" onclick="handleClick()">🔗 View Sponsor Ad</a>
-        <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+        <!-- Alert Shown When Shields/AdBlock is Active -->
+        <div id="adblock-alert-box">
+            <h4>⚠️ Brave Shields / Ad Blocker On!</h4>
+            <p>
+                චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර ඔබගේ Browser එකේ <b>Brave Shields</b> හෝ <b>Ad Blocker එක OFF කර</b> Refresh කරන්න.<br><br>
+                🦁 <b>Brave Users:</b> Address bar එක ළඟ ඇති Lion Icon එක click කර <b>Shields = OFF</b> කරන්න.
+            </p>
+            <button class="btn btn-reload" onclick="location.reload()">🔄 Reload Page</button>
+        </div>
+
+        <div id="normal-flow">
+            <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
+            
+            <div class="count-circle" id="count">8</div>
+
+            <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" onclick="handleClick()">🔗 View Sponsor Ad</a>
+            <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+        </div>
     </div>
 
     <script>
-        let isBlocked = false;
+        let isShieldActive = false;
 
-        function showWarning() {{
-            isBlocked = true;
-            document.getElementById('blocker-modal').style.display = 'flex';
+        function shieldDetected() {{
+            isShieldActive = true;
+            document.getElementById('adblock-alert-box').style.display = 'block';
+            document.getElementById('normal-flow').style.display = 'none';
         }}
 
-        // 1. Direct Brave Browser Detection via Browser API
-        async function checkBrave() {{
-            if (navigator.brave && await navigator.brave.isBrave()) {{
-                fetch('{ad_url}', {{ method: 'HEAD', mode: 'no-cors' }}).catch(() => {{
-                    showWarning();
-                }});
-            }}
-        }}
-        checkBrave();
-
-        // 2. Network Check to confirm Ad URL accessibility
-        fetch('https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js', {{ method: 'HEAD', mode: 'no-cors' }})
-        .catch(() => {{
-            showWarning();
+        // Backup Check: If Brave blocks the script silently without triggering onerror
+        window.addEventListener('load', () => {{
+            setTimeout(() => {{
+                // Checking if Google Ad object is undefined (blocked)
+                if (typeof window.adsbygoogle === 'undefined') {{
+                    shieldDetected();
+                }}
+            }}, 500);
         }});
 
         let timerStarted = false;
         function handleClick() {{
-            if (isBlocked) return;
+            if (isShieldActive) return;
             if (timerStarted) return;
             timerStarted = true;
             
