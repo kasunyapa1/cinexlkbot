@@ -319,7 +319,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER & BULLETPROOF REAL-TIME AD-GATEWAY (15s)
+# WEB SERVER & AD-GATEWAY (STRICT FREEZE ON BLOCKER)
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -334,7 +334,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# STRICT 15-SECOND AD DWELL VERIFIER (PHONE & PC BULLETPROOF)
+# STRICT TIMER FREEZE ON ADBLOCK / VIRUS GUARD DETECTION
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -367,7 +367,7 @@ SAME_PAGE_GATE_HTML = """
         }}
         .step-label {{ font-size: 13px; font-weight: bold; color: #5da9e9; letter-spacing: 1px; margin-bottom: 8px; }}
         h2 {{ margin: 0 0 12px; font-size: 20px; color: #ffffff; }}
-        p {{ font-size: 14px; color: #90a4ae; margin-bottom: 20px; line-height: 1.5; }}
+        p {{ font-size: 14px; color: #90a4ae; margin-bottom: 18px; line-height: 1.5; }}
         
         .btn {{ 
             display: block; 
@@ -405,7 +405,8 @@ SAME_PAGE_GATE_HTML = """
             color: #fca5a5;
         }}
 
-        #brave-block-box {{
+        /* Antivirus / Virus Guard Freeze Warning Box */
+        #block-freeze-box {{
             display: none;
             background: #2a1215;
             border: 2px solid #ef4444;
@@ -414,8 +415,21 @@ SAME_PAGE_GATE_HTML = """
             margin-bottom: 20px;
             text-align: left;
         }}
-        #brave-block-box h4 {{ margin: 0 0 8px 0; color: #ef4444; font-size: 16px; }}
-        #brave-block-box p {{ margin: 0; color: #fca5a5; font-size: 13px; line-height: 1.5; }}
+        #block-freeze-box h4 {{ margin: 0 0 8px 0; color: #ef4444; font-size: 15px; }}
+        #block-freeze-box p {{ margin: 0; color: #fca5a5; font-size: 13px; line-height: 1.5; }}
+
+        .antivirus-note {{
+            background: rgba(35, 52, 70, 0.45);
+            border: 1px dashed #34495e;
+            border-radius: 10px;
+            padding: 12px 14px;
+            margin-top: 20px;
+            text-align: left;
+            font-size: 12px;
+            line-height: 1.5;
+            color: #94a3b8;
+        }}
+        .antivirus-note b {{ color: #e2e8f0; }}
     </style>
 </head>
 <body>
@@ -424,11 +438,12 @@ SAME_PAGE_GATE_HTML = """
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
 
-        <div id="brave-block-box">
-            <h4>🚫 Brave Browser Blocked!</h4>
+        <!-- Freeze Warning Shown When AdBlock / Virus Guard is detected -->
+        <div id="block-freeze-box">
+            <h4>⛔ Verification Frozen (අවහිර කර ඇත)</h4>
             <p>
-                Brave Browser මඟින් Ads අවහිර කරන බැවින් නොමිලේ චිත්‍රපට ලබාගත නොහැක.<br><br>
-                කරුණාකර මෙම පිටුව <b>Google Chrome</b> එකෙන් විවෘත කරන්න.
+                ඔබගේ Browser එකෙහි <b>Brave Shields, Ad Blocker හෝ Virus Guard (ESET Web Shield)</b> මඟින් Ad Link එක Block කර ඇති බැවින් Countdown එක Freeze කර ඇත.<br><br>
+                චිත්‍රපටය නොමිලේ ලබාගැනීමට කරුණාකර Web Protection එක <b>තාවකාලිකව Pause/OFF කර</b> පිටුව Reload කරන්න.
             </p>
         </div>
 
@@ -436,26 +451,42 @@ SAME_PAGE_GATE_HTML = """
             <div id="status-box"></div>
             <p id="desc">පහත Button එක ඔබා Ad එක <b>තත්පර 15ක් නරඹන්න</b>. ඉන්පසු ආපසු මෙම පිටුවට පැමිණ චිත්‍රපටය ලබාගන්න.</p>
 
-            <!-- Action Button -->
             <button id="adBtn" class="btn btn-ad" onclick="handleClickAd()">🔗 View Sponsor Ad (15 Seconds)</button>
-            
-            <!-- Telegram Link (Revealed strictly after verified 15s dwell) -->
             <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+
+            <div class="antivirus-note">
+                💡 <b>PC / Antivirus භාවිතා කරන්නන් වෙත:</b><br>
+                ඔබගේ Antivirus (ESET, Kaspersky ආදී) හෝ Browser Extension මඟින් Ad Link එක Block කරන්නේ නම්, කරුණාකර Web Protection තාවකාලිකව Pause කර උත්සාහ කරන්න.
+            </div>
         </div>
     </div>
 
     <script>
-        // Block Brave completely
-        if (navigator.brave) {{
-            document.getElementById('brave-block-box').style.display = 'block';
+        let isPermanentlyFrozen = false;
+
+        function freezeSystem() {{
+            isPermanentlyFrozen = true;
+            document.getElementById('block-freeze-box').style.display = 'block';
             document.getElementById('normal-flow').style.display = 'none';
         }}
+
+        // 1. Brave Browser Check
+        if (navigator.brave) {{
+            freezeSystem();
+        }}
+
+        // 2. Network Endpoint Block Check (Catches Virus Guard & AdBlock Sinkholes)
+        fetch('{ad_url}', {{ method: 'HEAD', mode: 'no-cors', cache: 'no-store' }}).catch(() => {{
+            freezeSystem();
+        }});
 
         let adClickTimestamp = 0;
         let isCompleted = false;
         const REQUIRED_SECONDS = 15;
 
         function handleClickAd() {{
+            if (isPermanentlyFrozen) return;
+
             adClickTimestamp = Date.now();
             window.open('{ad_url}', '_blank');
 
@@ -467,22 +498,20 @@ SAME_PAGE_GATE_HTML = """
             document.getElementById('adBtn').innerText = '🔄 නැවත Ad එක Open කරන්න';
         }}
 
-        // Verify strictly when user returns to this tab
+        // Verify strictly when user returns
         function verifyReturn() {{
-            if (isCompleted || adClickTimestamp === 0) return;
+            if (isPermanentlyFrozen || isCompleted || adClickTimestamp === 0) return;
 
             const timeSpentSeconds = Math.floor((Date.now() - adClickTimestamp) / 1000);
             const statusBox = document.getElementById('status-box');
 
             if (timeSpentSeconds >= REQUIRED_SECONDS) {{
-                // Passed: user genuinely stayed 15 seconds on ad
                 isCompleted = true;
                 statusBox.style.display = 'none';
                 document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:';
                 document.getElementById('adBtn').style.display = 'none';
                 document.getElementById('doneBtn').style.display = 'block';
             }} else {{
-                // Failed: user came back too early (no money for us)
                 const remaining = REQUIRED_SECONDS - timeSpentSeconds;
                 statusBox.className = 'warn';
                 statusBox.style.display = 'block';
@@ -490,7 +519,6 @@ SAME_PAGE_GATE_HTML = """
             }}
         }}
 
-        // Catch tab switch on Mobile Chrome and PC
         window.addEventListener('focus', verifyReturn);
         document.addEventListener('visibilitychange', function() {{
             if (!document.hidden) {{
