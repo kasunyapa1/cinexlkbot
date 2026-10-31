@@ -97,13 +97,12 @@ STORAGE_CLEAN = str(STORAGE_CHANNEL_RAW).replace("-100", "").replace("-", "")
 CACHED_BACKUP_LINK = BACKUP_CHANNEL_LINK
 
 # =========================================================
-# VIP BACKGROUND AUTO-KICK & 3-DAY REMINDER WORKER
+# VIP AUTO-KICK & 3-DAY REMINDER WORKER
 # =========================================================
 async def auto_kick_expired_vips():
     while True:
         try:
             now = datetime.utcnow()
-
             three_days_later = now + timedelta(days=3)
             reminder_candidates = await vip_users_col.find({
                 "initial_days": {"$gt": 1},
@@ -164,9 +163,7 @@ def get_vip_selection_menu():
     )
 
     markup = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(f"⚡ 1 Day Trial - Rs. {VIP_PLANS['1d']['price']}", callback_data="buyplan_1d")
-        ],
+        [InlineKeyboardButton(f"⚡ 1 Day Trial - Rs. {VIP_PLANS['1d']['price']}", callback_data="buyplan_1d")],
         [
             InlineKeyboardButton(f"👑 1 Month - Rs. {VIP_PLANS['1m']['price']}", callback_data="buyplan_1m"),
             InlineKeyboardButton(f"🔥 3 Months - Rs. {VIP_PLANS['3m']['price']}", callback_data="buyplan_3m")
@@ -180,7 +177,7 @@ def get_vip_selection_menu():
     return text, markup
 
 # =========================================================
-# MOVIE CATALOG (STRICTLY ONLY POSTED MOVIES)
+# MOVIE CATALOG
 # =========================================================
 async def get_movies_page(page: int = 1, user_id: int = 0):
     limit = 10
@@ -319,7 +316,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER & AD-GATEWAY (BULLETPROOF DWELL-TIME VERIFIER)
+# WEB SERVER & AD-GATEWAY
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -334,7 +331,6 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# GUARANTEED MONETAG REVENUE & ANTI-BYPASS GATEWAY
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -453,8 +449,8 @@ SAME_PAGE_GATE_HTML = """
             <p id="desc">පහත Button එක ඔබා Ad පිටුවේ <b>තත්පර 15ක්</b> රැඳී සිටින්න. ඉන්පසු චිත්‍රපටය Unlock කරගන්න.</p>
 
             <button id="adBtn" class="btn btn-ad" onclick="handleClickAd()">🔗 1. Open Sponsor Ad (15 Seconds)</button>
-            <button id="checkBtn" class="btn btn-check" onclick="checkVerification()">⚡ 2. Check & Unlock Movie Link</button>
-            <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+            <button id="checkBtn" class="btn btn-check" onclick="checkVerification()">⚡ 2. Check & Unlock Movie</button>
+            <a id="doneBtn" class="btn btn-done" href="{next_target_url}">✅ {next_button_text}</a>
 
             <div class="antivirus-note">
                 💡 <b>PC / Antivirus භාවිතා කරන්නන් වෙත:</b><br>
@@ -469,10 +465,9 @@ SAME_PAGE_GATE_HTML = """
             document.getElementById('normal-flow').style.display = 'none';
         }}
 
-        const TIME_KEY = 'click_time_{token}';
+        const TIME_KEY = 'click_time_step_{step}_{token}';
         const REQUIRED_SECONDS = 15;
 
-        // Restore state if page was restored on mobile
         let savedTime = localStorage.getItem(TIME_KEY);
         if (savedTime) {{
             document.getElementById('adBtn').innerText = '🔄 නැවත Ad එක Open කරන්න';
@@ -507,15 +502,13 @@ SAME_PAGE_GATE_HTML = """
             const elapsed = Math.floor((Date.now() - parseInt(clickTime)) / 1000);
 
             if (elapsed >= REQUIRED_SECONDS) {{
-                // Genuine 15s visit passed
                 localStorage.removeItem(TIME_KEY);
                 statusBox.style.display = 'none';
-                document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:';
+                document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! ඉදිරියට යාමට පහත Button එක ඔබන්න:';
                 document.getElementById('adBtn').style.display = 'none';
                 document.getElementById('checkBtn').style.display = 'none';
                 document.getElementById('doneBtn').style.display = 'block';
             }} else {{
-                // Blocked by Antivirus/AdBlock immediately or came back too early
                 const remaining = REQUIRED_SECONDS - elapsed;
                 statusBox.className = 'warn-red';
                 statusBox.style.display = 'block';
@@ -523,7 +516,6 @@ SAME_PAGE_GATE_HTML = """
             }}
         }}
 
-        // Auto trigger check when returning to tab
         window.addEventListener('focus', function() {{
             if (localStorage.getItem(TIME_KEY)) {{
                 checkVerification();
@@ -544,17 +536,27 @@ SAME_PAGE_GATE_HTML = """
 async def root_ping(request):
     return web.Response(text="Cinex LK Hybrid Engine Alive", status=200)
 
+# STEP 1: Directly targets Step 2 page upon completion (Bypasses intermediate bot loop!)
 @routes.get("/gate/step1/{user_id}/{msg_id}")
 async def gate_step1(request):
     try:
         user_id = request.match_info['user_id']
         msg_id = request.match_info['msg_id']
         token = f"tok1_{user_id}_{msg_id}"
-        html_page = SAME_PAGE_GATE_HTML.format(step="1", ad_url=PRIMARY_AD_LINK, bot_username=BOT_USERNAME, token=token)
+        next_step2_url = f"{BASE_URL}/gate/step2/{user_id}/{msg_id}" if BASE_URL else PRIMARY_AD_LINK
+        
+        html_page = SAME_PAGE_GATE_HTML.format(
+            step="1",
+            ad_url=PRIMARY_AD_LINK,
+            token=token,
+            next_target_url=next_step2_url,
+            next_button_text="Go to Step 2 ➡️"
+        )
         return web.Response(text=html_page, content_type='text/html')
     except Exception as e:
         return web.Response(text=f"Gate Step 1 Error: {e}", status=500)
 
+# STEP 2: Targets File Bot directly for instant delivery
 @routes.get("/gate/step2/{user_id}/{msg_id}")
 async def gate_step2(request):
     try:
@@ -562,7 +564,15 @@ async def gate_step2(request):
         msg_id = request.match_info['msg_id']
         token = f"tok2_{user_id}_{msg_id}"
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
-        html_page = SAME_PAGE_GATE_HTML.format(step="2", ad_url=PRIMARY_AD_LINK, bot_username=target_delivery_bot, token=token)
+        direct_file_bot_url = f"https://t.me/{target_delivery_bot}?start={token}"
+        
+        html_page = SAME_PAGE_GATE_HTML.format(
+            step="2",
+            ad_url=PRIMARY_AD_LINK,
+            token=token,
+            next_target_url=direct_file_bot_url,
+            next_button_text="Get Movie on Telegram 🎬"
+        )
         return web.Response(text=html_page, content_type='text/html')
     except Exception as e:
         return web.Response(text=f"Gate Step 2 Error: {e}", status=500)
@@ -820,17 +830,13 @@ async def create_storage_preview(client: Client, message: Message):
         await client.send_photo(chat_id=message.chat.id, photo=poster_url, caption=caption, reply_markup=preview_markup)
     except Exception:
         await client.send_message(chat_id=message.chat.id, text=caption, reply_markup=preview_markup)
-    print(f"✅ Generated Control Preview for: {file_name}")
 
 # =========================================================
 # UNIVERSAL MESSAGE DISPATCHER (MAIN BOT)
 # =========================================================
 @app.on_message()
 async def universal_message_handler(client: Client, message: Message):
-    if not message.chat:
-        return
-
-    if message.from_user and message.from_user.is_bot:
+    if not message.chat or (message.from_user and message.from_user.is_bot):
         return
 
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
@@ -849,16 +855,13 @@ async def universal_message_handler(client: Client, message: Message):
         if text == "/stats":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-            
             total_movies = await files_col.count_documents({})
             posted_movies = await files_col.count_documents({"is_posted": True})
             total_vip = await vip_users_col.count_documents({"expiry_date": {"$gt": datetime.utcnow()}})
-            
-            pipeline = [{"$group": {"_id": None, "total_downloads": {"$sum": "$download_count"}}}]
-            agg = await files_col.aggregate(pipeline).to_list(length=1)
+            agg = await files_col.aggregate([{"$group": {"_id": None, "total_downloads": {"$sum": "$download_count"}}}]).to_list(length=1)
             total_dl = agg[0]["total_downloads"] if agg else 0
 
-            stats_msg = (
+            await message.reply_text(
                 "📊 <b>Cinex LK Storage & Bot Statistics:</b>\n\n"
                 f"📦 <b>Total Storage Files:</b> <code>{total_movies}</code>\n"
                 f"🎬 <b>Live Published Movies:</b> <code>{posted_movies}</code>\n"
@@ -866,20 +869,13 @@ async def universal_message_handler(client: Client, message: Message):
                 f"👑 <b>Active VIP Members:</b> <code>{total_vip}</code>\n\n"
                 f"📦 <i>Storage ID:</i> <code>{STORAGE_CHANNEL_RAW}</code>"
             )
-            await message.reply_text(stats_msg)
             return
 
         if text == "/resetallcatalog":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-            res = await files_col.update_many(
-                {},
-                {"$set": {"is_posted": False, "posted_main": False, "posted_vip": False}}
-            )
-            await message.reply_text(
-                f"🧹 <b>සම්පූර්ණ Catalog Reset එක සාර්ථකයි!</b>\n\n"
-                f"Database Movies <code>{res.modified_count}</code>ම Catalog එකෙන් ඉවත් කරන ලදී."
-            )
+            res = await files_col.update_many({}, {"$set": {"is_posted": False, "posted_main": False, "posted_vip": False}})
+            await message.reply_text(f"🧹 <b>සම්පූර්ණ Catalog Reset එක සාර්ථකයි!</b>\nMovies <code>{res.modified_count}</code>ම ඉවත් කරන ලදී.")
             return
 
         if text.startswith("/publishrange"):
@@ -887,7 +883,7 @@ async def universal_message_handler(client: Client, message: Message):
                 return
             args = text.split()
             if len(args) < 3:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publishrange &lt;START_ID&gt; &lt;END_ID&gt;</code>\nඋදා: <code>/publishrange 64 220</code>")
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publishrange &lt;START_ID&gt; &lt;END_ID&gt;</code>")
                 return
             try:
                 start_id = int(args[1].strip())
@@ -900,42 +896,26 @@ async def universal_message_handler(client: Client, message: Message):
                 {"message_id": {"$gte": start_id, "$lte": end_id}},
                 {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}}
             )
-            await message.reply_text(f"✅ සාර්ථකයි! ID <code>{start_id}</code> සිට <code>{end_id}</code> දක්වා Movies <code>{res.modified_count}</code>ක් Catalog එකට Publish කරන ලදී.")
+            await message.reply_text(f"✅ ID <code>{start_id}</code> සිට <code>{end_id}</code> දක්වා Movies <code>{res.modified_count}</code>ක් Publish කරන ලදී.")
             return
 
         if text.startswith("/publish") and not text.startswith("/publishrange"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-            args = text.split()[1:]
-            if not args:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/publish &lt;ID&gt;</code>")
-                return
-
-            ids = [int(a) for a in args if a.isdigit()]
+            ids = [int(a) for a in text.split()[1:] if a.isdigit()]
             if not ids:
                 await message.reply_text("❌ වලංගු Message ID හමු නොවීය.")
                 return
-
-            res = await files_col.update_many(
-                {"message_id": {"$in": ids}},
-                {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}}
-            )
-            await message.reply_text(f"✅ සාර්ථකයි! Movies <code>{res.modified_count}</code>ක් Catalog එකට Add කරන ලදී.")
+            res = await files_col.update_many({"message_id": {"$in": ids}}, {"$set": {"is_posted": True, "posted_main": True, "posted_vip": True}})
+            await message.reply_text(f"✅ Movies <code>{res.modified_count}</code>ක් Publish කරන ලදී.")
             return
 
         if text.startswith("/unpublish"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-            args = text.split()[1:]
-            if not args:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/unpublish &lt;Message_ID&gt;</code>")
-                return
-            ids = [int(a) for a in args if a.isdigit()]
-            res = await files_col.update_many(
-                {"message_id": {"$in": ids}},
-                {"$set": {"is_posted": False, "posted_main": False, "posted_vip": False}}
-            )
-            await message.reply_text(f"🚫 Movies <code>{res.modified_count}</code>ක් Catalog එකෙන් ඉවත් කරන ලදී.")
+            ids = [int(a) for a in text.split()[1:] if a.isdigit()]
+            res = await files_col.update_many({"message_id": {"$in": ids}}, {"$set": {"is_posted": False, "posted_main": False, "posted_vip": False}})
+            await message.reply_text(f"🚫 Movies <code>{res.modified_count}</code>ක් ඉවත් කරන ලදී.")
             return
 
         if text in ["/movies", "/list"]:
@@ -946,77 +926,50 @@ async def universal_message_handler(client: Client, message: Message):
         if text == "/storage":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-
             total_movies = await files_col.count_documents({})
             if total_movies == 0:
-                await message.reply_text("📂 <b>Storage Database එකෙහි Movies කිසිවක් හමු නොවීය.</b>")
+                await message.reply_text("📂 <b>Storage Database එකෙහි Movies නැත.</b>")
                 return
-
-            recent_cursor = files_col.find({}).sort("_id", -1).limit(30)
-            recent_movies = await recent_cursor.to_list(length=30)
-
-            list_text = f"📂 <b>Storage Files List (Total: {total_movies} Movies)</b>\n\n"
+            recent_movies = await files_col.find({}).sort("_id", -1).limit(30).to_list(length=30)
+            list_text = f"📂 <b>Storage Files List (Total: {total_movies})</b>\n\n"
             for idx, doc in enumerate(recent_movies, 1):
                 clean_t = clean_movie_title(doc.get("file_name", "Movie"))[0]
                 mid = doc.get("message_id")
                 dl_count = doc.get("download_count", 0)
                 is_p = "✅ Live" if doc.get("is_posted") else "❌ Storage Only"
                 list_text += f"{idx}. [{is_p}] <b>{html.escape(clean_t[:25])}</b> (ID: <code>{mid}</code> | 📥 {dl_count})\n"
-
-            if total_movies > 30:
-                list_text += f"\n<i>...සහ තවත් චිත්‍රපට {total_movies - 30}ක් ඇත.</i>"
-
             await message.reply_text(list_text)
             return
 
         if text == "/viplist":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-
             now = datetime.utcnow()
             active_vips = await vip_users_col.find({"expiry_date": {"$gt": now}}).sort("expiry_date", 1).to_list(length=100)
-
             if not active_vips:
-                await message.reply_text("👑 <b>දැනට Active VIP සාමාජිකයන් කිසිවෙකු නොමැත.</b>")
+                await message.reply_text("👑 <b>දැනට Active VIP සාමාජිකයන් නැත.</b>")
                 return
-
-            vip_text = f"👑 <b>Active VIP Members List (Total: {len(active_vips)})</b>\n\n"
+            vip_text = f"👑 <b>Active VIP Members (Total: {len(active_vips)})</b>\n\n"
             kick_buttons = []
-
             for idx, v in enumerate(active_vips, 1):
                 v_uid = v.get("user_id")
-                joined_at = v.get("joined_at")
                 expiry_date = v.get("expiry_date")
-
-                joined_str = joined_at.strftime("%Y-%m-%d") if isinstance(joined_at, datetime) else "N/A"
                 expiry_str = expiry_date.strftime("%Y-%m-%d") if isinstance(expiry_date, datetime) else "N/A"
                 rem_days = (expiry_date - now).days if isinstance(expiry_date, datetime) else 0
-
-                vip_text += (
-                    f"{idx}. 👤 <b>User ID:</b> <code>{v_uid}</code>\n"
-                    f"   📅 <b>Joined:</b> <code>{joined_str}</code>\n"
-                    f"   ⏳ <b>Expires:</b> <code>{expiry_str}</code> (<b>{rem_days} Days Left</b>)\n\n"
-                )
-                kick_buttons.append([InlineKeyboardButton(f"🚫 Kick out {v_uid}", callback_data=f"kick_{v_uid}")])
-
+                vip_text += f"{idx}. 👤 <code>{v_uid}</code> | ⏳ Expires: <code>{expiry_str}</code> (<b>{rem_days} Days</b>)\n"
+                kick_buttons.append([InlineKeyboardButton(f"🚫 Kick {v_uid}", callback_data=f"kick_{v_uid}")])
             await message.reply_text(vip_text, reply_markup=InlineKeyboardMarkup(kick_buttons))
             return
 
         if text.startswith("/kickvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
-            args = text.split()
-            if len(args) < 2:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/kickvip &lt;USER_ID&gt;</code>")
-                return
             try:
-                target_uid = int(args[1].strip())
-            except ValueError:
-                await message.reply_text("❌ වැරදි User ID එකකි.")
-                return
-
-            await kick_user_from_vip_channel(target_uid)
-            await message.reply_text(f"✅ User <code>{target_uid}</code> VIP Channel එකෙන් Kick කර VIP සාමාජිකත්වය අවලංගු කරන ලදී.")
+                target_uid = int(text.split()[1].strip())
+                await kick_user_from_vip_channel(target_uid)
+                await message.reply_text(f"✅ User <code>{target_uid}</code> VIP ඉවත් කරන ලදී.")
+            except Exception:
+                await message.reply_text("❌ වලංගු User ID එකක් ලබා දෙන්න.")
             return
 
         if text.startswith("/addvip"):
@@ -1024,51 +977,39 @@ async def universal_message_handler(client: Client, message: Message):
                 return
             args = text.split()
             if len(args) < 2:
-                await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt; [දින ගණන]</code>\nඋදා: <code>/addvip 123456789 1</code> හෝ <code>/addvip 123456789 30</code>")
+                await message.reply_text("❌ <b>භාවිතය:</b> <code>/addvip &lt;USER_ID&gt; [දින]</code>")
                 return
             try:
                 target_user_id = int(args[1].strip())
+                days_to_add = int(args[2].strip()) if len(args) >= 3 and args[2].isdigit() else 30
             except ValueError:
                 await message.reply_text("❌ වැරදි User ID එකකි.")
                 return
-
-            days_to_add = 30
-            if len(args) >= 3 and args[2].isdigit():
-                days_to_add = int(args[2].strip())
 
             now = datetime.utcnow()
             expiry_date = now + timedelta(days=days_to_add)
             await vip_users_col.update_one(
                 {"user_id": target_user_id},
-                {"$set": {
-                    "user_id": target_user_id,
-                    "expiry_date": expiry_date,
-                    "joined_at": now,
-                    "initial_days": days_to_add,
-                    "is_kicked": False,
-                    "reminded_3d": False
-                }},
+                {"$set": {"user_id": target_user_id, "expiry_date": expiry_date, "joined_at": now, "initial_days": days_to_add, "is_kicked": False, "reminded_3d": False}},
                 upsert=True
             )
             try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-                payload = {"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}
                 async with aiohttp.ClientSession() as session:
-                    async with session.post(url, json=payload) as resp:
+                    async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink", json={"chat_id": str(VIP_CHANNEL_RAW), "member_limit": 1}) as resp:
                         res = await resp.json()
                         if res.get("ok"):
                             link = res["result"]["invite_link"]
-                            await client.send_message(
-                                chat_id=target_user_id,
-                                text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය දින {days_to_add}කට සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}"
-                            )
-                            await message.reply_text(f"✅ User <code>{target_user_id}</code> වෙත දින {days_to_add}ක VIP සක්‍රිය කරන ලදී.\n📅 Expiry: <code>{expiry_date.strftime('%Y-%m-%d')}</code>")
+                            await client.send_message(chat_id=target_user_id, text=f"🎉 <b>ඔබගේ VIP සාමාජිකත්වය දින {days_to_add}කට සක්‍රිය විය!</b>\n\n🔗 VIP Channel Link:\n{link}")
+                            await message.reply_text(f"✅ User <code>{target_user_id}</code> වෙත VIP සක්‍රිය කරන ලදී.")
                             return
-                await message.reply_text("⚠️ Invite Link එක සෑදීම අසාර්ථක විය.")
-            except Exception as e:
-                await message.reply_text(f"⚠️ Invite Error: {e}")
+            except Exception:
+                pass
+            await message.reply_text(f"✅ VIP Entry added for <code>{target_user_id}</code>.")
             return
 
+        # =========================================================
+        # /start COMMAND WITH DIRECT NON-LOOPING ROUTING
+        # =========================================================
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
@@ -1080,39 +1021,17 @@ async def universal_message_handler(client: Client, message: Message):
 
             if param.startswith("vipfile_"):
                 mid = param.split("_")[1]
-                doc = await files_col.find_one({"message_id": int(mid)})
-                if not doc or not doc.get("is_posted"):
-                    await message.reply_text("❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
-                    return
-
-                dl_btn = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📥 Download Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}")]
-                ])
+                dl_btn = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=vipfile_{mid}")]])
                 await message.reply_text("👑 <b>Cinex LK VIP Direct File:</b>\n\nචිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න 👇", reply_markup=dl_btn)
-                return
-
-            if param.startswith("tok1_"):
-                mid = param.split("_")[2]
-                step2_url = f"{BASE_URL}/gate/step2/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
-                await message.reply_text(
-                    "🎉 <b>Step 1 සාර්ථකයි!</b>\n\nඅවසන් පියවර ලෙස පහත Sponsor Link එක විවෘත කරන්න:",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 2", url=step2_url)]])
-                )
                 return
 
             if param.startswith("tok2_"):
                 mid = param.split("_")[2]
-                doc = await files_col.find_one({"message_id": int(mid)})
-                if not doc or not doc.get("is_posted"):
-                    await message.reply_text("❌ <b>මෙම චිත්‍රපටය තවමත් Channels වෙත Publish කර නොමැත.</b>")
-                    return
-
-                dl_btn = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📥 Get Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=tok2_{mid}")]
-                ])
+                dl_btn = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Get Movie File (Click Here)", url=f"https://t.me/{target_delivery_bot}?start=tok2_{mid}")]])
                 await message.reply_text("🎉 <b>සත්‍යාපනය සාර්ථකයි!</b>\n\nචිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න 👇", reply_markup=dl_btn)
                 return
 
+            # Force Subscribe Check
             if not await check_access(user_id):
                 await message.reply_text(
                     "🔒 <b>චිත්‍රපට ලබාගැනීමට පෙර කරුණාකර පහත Channels දෙකටම Join වී Verify ඔබන්න:</b>",
@@ -1129,8 +1048,8 @@ async def universal_message_handler(client: Client, message: Message):
 
                 step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                 await message.reply_text(
-                    "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 15ක් රැඳී සිටින්න:",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
+                    "🎬 <b>Download Verification:</b>\n\nචිත්‍රපටය නොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කරන්න:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Verification Link", url=step1_url)]])
                 )
                 return
 
@@ -1139,28 +1058,19 @@ async def universal_message_handler(client: Client, message: Message):
                 [InlineKeyboardButton("👑 Buy VIP Membership", callback_data="show_vip_menu")]
             ])
 
-            welcome_text = (
+            await message.reply_text(
                 "👋 <b>සාදරයෙන් පිළිගන්නවා Cinex LK වෙත!</b>\n\n"
                 "📌 <b>ප්‍රධාන පහසුකම්:</b>\n"
                 "• 🎬 <b>Movies List එක බැලීමට:</b> <code>/movies</code>\n"
-                "• 📩 <b>Movie එකක් ඉල්ලීමට:</b> <code>/req &lt;Movie Name&gt;</code> (හෝ නම එවන්න)\n"
+                "• 📩 <b>Movie එකක් ඉල්ලීමට:</b> <code>/req &lt;Movie Name&gt;</code>\n"
                 "• 👑 <b>VIP සාමාජිකත්වය:</b> <code>/start vip</code>\n\n"
-                f"📢 නිල Channel එක: {MAIN_CHANNEL}"
+                f"📢 නිල Channel එක: {MAIN_CHANNEL}",
+                reply_markup=welcome_markup
             )
-            await message.reply_text(welcome_text, reply_markup=welcome_markup)
             return
 
-        req_movie = ""
-        if text.startswith("/req"):
-            parts = text.split(maxsplit=1)
-            if len(parts) > 1:
-                req_movie = parts[1].strip()
-            else:
-                await message.reply_text("❌ <b>කරුණාකර චිත්‍රපටයේ නම ඇතුළත් කරන්න.</b>\nඋදා: <code>/req Avatar 2</code>")
-                return
-        elif not text.startswith("/"):
-            req_movie = text
-
+        # Movie Request Handler
+        req_movie = text.replace("/req", "").strip() if text.startswith("/req") else (text if not text.startswith("/") else "")
         if req_movie:
             user_full = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
             user_handle = f"@{message.from_user.username}" if message.from_user.username else "No Username"
@@ -1168,24 +1078,15 @@ async def universal_message_handler(client: Client, message: Message):
             vip_tag = "👑 VIP MEMBER" if is_vip else "👤 Regular User"
 
             if ADMIN_USER_ID:
-                admin_alert = (
-                    "📩 <b>නව Movie Request එකක් ලැබුණා!</b>\n\n"
-                    f"🎬 <b>Movie:</b> <code>{html.escape(req_movie)}</code>\n"
-                    f"👤 <b>User:</b> {html.escape(user_full)} ({user_handle})\n"
-                    f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
-                    f"🎖️ <b>Status:</b> <b>{vip_tag}</b>"
-                )
                 try:
-                    await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
+                    await client.send_message(
+                        chat_id=ADMIN_USER_ID,
+                        text=f"📩 <b>නව Movie Request එකක්!</b>\n\n🎬 <b>Movie:</b> <code>{html.escape(req_movie)}</code>\n👤 <b>User:</b> {html.escape(user_full)} ({user_handle})\n🆔 <code>{user_id}</code> | <b>{vip_tag}</b>"
+                    )
                 except Exception:
                     pass
 
-            resp_text = (
-                f"✅ <b>ඔබගේ Request එක Admin වෙත යොමු කරන ලදී!</b>\n\n"
-                f"🎬 <b>චිත්‍රපටය:</b> <code>{html.escape(req_movie)}</code>\n\n"
-                "කඩිනමින් අපගේ Main සහ VIP Channels වෙත මෙය Upload කරනු ඇත. රැඳී සිටින්න!"
-            )
-            await message.reply_text(resp_text)
+            await message.reply_text(f"✅ <b>ඔබගේ Request එක Admin වෙත යොමු කරන ලදී!</b>\n\n🎬 <code>{html.escape(req_movie)}</code>\n\nකඩිනමින් Channels වෙත Upload කරනු ඇත.")
             return
 
 # =========================================================
@@ -1232,14 +1133,11 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
             await callback.answer("❌ ඔබට මෙම ක්‍රියාව කිරීමට අවසර නැත.", show_alert=True)
             return
-
         target_uid = int(data.replace("kick_", ""))
         await kick_user_from_vip_channel(target_uid)
-        await callback.answer(f"✅ User {target_uid} සාර්ථකව Kick කරන ලදී!", show_alert=True)
+        await callback.answer(f"✅ User {target_uid} Kick කරන ලදී!", show_alert=True)
         try:
-            await callback.message.edit_text(
-                f"{callback.message.text}\n\n<b>🚫 [Kick Status]</b> <code>{target_uid}</code> ඉවත් කරන ලදී."
-            )
+            await callback.message.edit_text(f"{callback.message.text}\n\n<b>🚫 [Kick Status]</b> <code>{target_uid}</code> ඉවත් කරන ලදී.")
         except Exception:
             pass
         return
@@ -1247,38 +1145,17 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
-
         main_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("📥 Fast Download (Free)", url=f"https://t.me/{BOT_USERNAME}?start=adstep1_{msg_id}")],
             [InlineKeyboardButton("👑 Buy VIP Pass (No Ads)", url=f"https://t.me/{BOT_USERNAME}?start=buyvip")]
         ])
-
-        target = MAIN_CHANNEL
         try:
             if callback.message.photo:
-                await client.send_photo(chat_id=target, photo=callback.message.photo.file_id, caption=caption, reply_markup=main_markup)
+                await client.send_photo(chat_id=MAIN_CHANNEL, photo=callback.message.photo.file_id, caption=caption, reply_markup=main_markup)
             else:
-                await client.send_message(chat_id=target, text=caption, reply_markup=main_markup)
-            
+                await client.send_message(chat_id=MAIN_CHANNEL, text=caption, reply_markup=main_markup)
             await files_col.update_one({"message_id": msg_id}, {"$set": {"is_posted": True, "posted_main": True}})
-
-            await callback.answer("✅ Main Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
-
-            try:
-                current_keyboard = callback.message.reply_markup.inline_keyboard
-                new_keyboard = []
-                for row in current_keyboard:
-                    new_row = []
-                    for btn in row:
-                        if btn.callback_data == f"post_main_{msg_id}":
-                            new_row.append(InlineKeyboardButton("✅ Posted to Main (Re-post)", callback_data=f"post_main_{msg_id}"))
-                        else:
-                            new_row.append(btn)
-                    new_keyboard.append(new_row)
-                await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
-            except Exception:
-                pass
-
+            await callback.answer("✅ Main Channel එකට Post කරන ලදී!", show_alert=True)
         except Exception as e:
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
@@ -1286,57 +1163,24 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
-
         clean_caption = re.sub(r"👇.*", "", caption, flags=re.DOTALL).strip()
         vip_caption = f"{clean_caption}\n\n👑 <b>VIP Direct File:</b> දැන්වීම් නොමැතිව download කරගන්න 👇"
-
-        vip_markup = {
-            "inline_keyboard": [
-                [{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{target_delivery_bot}?start=vipfile_{msg_id}"}]
-            ]
-        }
-
+        vip_markup = {"inline_keyboard": [[{"text": "⚡ Instant Download (Direct File)", "url": f"https://t.me/{target_delivery_bot}?start=vipfile_{msg_id}"}]]}
         target_vip = str(VIP_CHANNEL_RAW).strip()
+        
         sent = False
-        err_desc = ""
-
         if callback.message.photo:
             res = await send_tg_photo_fileid(target_vip, callback.message.photo.file_id, vip_caption, vip_markup)
-            if res.get("ok"):
-                sent = True
-            else:
-                err_desc = res.get("description", "")
-
+            sent = res.get("ok", False)
         if not sent:
             res = await send_tg_message(target_vip, vip_caption, vip_markup)
-            if res.get("ok"):
-                sent = True
-            else:
-                if not err_desc:
-                    err_desc = res.get("description", "")
+            sent = res.get("ok", False)
 
         if sent:
             await files_col.update_one({"message_id": msg_id}, {"$set": {"is_posted": True, "posted_vip": True}})
-
-            await callback.answer("✅ VIP Channel එකට සාර්ථකව Post කරන ලදී!", show_alert=True)
-
-            try:
-                current_keyboard = callback.message.reply_markup.inline_keyboard
-                new_keyboard = []
-                for row in current_keyboard:
-                    new_row = []
-                    for btn in row:
-                        if btn.callback_data == f"post_vip_{msg_id}":
-                            new_row.append(InlineKeyboardButton("✅ Posted to VIP (Re-post)", callback_data=f"post_vip_{msg_id}"))
-                        else:
-                            new_row.append(btn)
-                    new_keyboard.append(new_row)
-                await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
-            except Exception:
-                pass
-
+            await callback.answer("✅ VIP Channel එකට Post කරන ලදී!", show_alert=True)
         else:
-            await callback.answer(f"❌ VIP Fail: {err_desc[:100]}", show_alert=True)
+            await callback.answer("❌ VIP Fail", show_alert=True)
         return
 
     if data.startswith("verify_"):
@@ -1348,69 +1192,45 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
                 if param.startswith("adstep1_"):
                     mid = param.split("_")[1]
                     step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
-                    await client.send_message(user_id, "🎬 <b>Step 1 of 2:</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]]))
+                    await client.send_message(user_id, "🎬 <b>Download Verification:</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Verification Link", url=step1_url)]]))
                 elif param in ["buyvip", "vip"]:
                     vip_text, vip_markup = get_vip_selection_menu()
                     await client.send_message(user_id, vip_text, reply_markup=vip_markup)
             else:
-                await client.send_message(user_id, "👋 ඔබට අවශ්‍ය Movie එකේ නම type කර Search කරන්න. නාමාවලිය සඳහා: /movies")
+                await client.send_message(user_id, "👋 චිත්‍රපට නාමාවලිය සඳහා: /movies")
         else:
-            await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
+            await callback.answer("❌ Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
     if data.startswith("buyplan_"):
         await callback.answer()
         plan_key = data.replace("buyplan_", "")
         plan = VIP_PLANS.get(plan_key, VIP_PLANS["1m"])
-
-        price = plan["price"]
-        label = plan["label"]
-        days = plan["days"]
-
+        price, label, days = plan["price"], plan["label"], plan["days"]
         ref = f"CX-{random.randint(10000, 99999)}"
         username = f"@{callback.from_user.username}" if callback.from_user.username else "No Username"
         full_name = f"{callback.from_user.first_name or ''} {callback.from_user.last_name or ''}".strip()
 
         await manual_orders_col.update_one(
             {"user_id": user_id},
-            {"$set": {
-                "user_id": user_id,
-                "username": username,
-                "name": full_name,
-                "ref_code": ref,
-                "plan": label,
-                "days": days,
-                "amount": price,
-                "status": "pending",
-                "created_at": datetime.utcnow()
-            }},
+            {"$set": {"user_id": user_id, "username": username, "name": full_name, "ref_code": ref, "plan": label, "days": days, "amount": price, "status": "pending", "created_at": datetime.utcnow()}},
             upsert=True
         )
 
         if ADMIN_USER_ID:
-            admin_alert = (
-                "🔔 <b>නව VIP Payment ඉල්ලීමක්!</b>\n\n"
-                f"👤 <b>පරිශීලකයා:</b> {html.escape(full_name)} ({username})\n"
-                f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
-                f"📦 <b>තෝරාගත් Plan එක:</b> <b>{label} ({days} Day{'s' if days > 1 else ''})</b>\n"
-                f"💰 <b>ගෙවිය යුතු මුදල:</b> <code>Rs. {price}</code>\n"
-                f"🔑 <b>Reference Code:</b> <code>{ref}</code>\n\n"
-                f"📌 <i>User slip එක එවූ පසු VIP දීමට:</i>\n<code>/addvip {user_id} {days}</code>"
-            )
             try:
-                await client.send_message(chat_id=ADMIN_USER_ID, text=admin_alert)
+                await client.send_message(
+                    chat_id=ADMIN_USER_ID,
+                    text=f"🔔 <b>නව VIP Payment ඉල්ලීමක්!</b>\n\n👤 {html.escape(full_name)} ({username})\n🆔 <code>{user_id}</code>\n📦 <b>{label}</b> | 💰 <code>Rs. {price}</code>\n🔑 <code>{ref}</code>\n\nVIP දීමට: <code>/addvip {user_id} {days}</code>"
+                )
             except Exception:
                 pass
 
         admin_link = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
         text = (
-            f"👑 <b>Cinex LK VIP Pass - {label}</b>\n\n"
-            f"💰 <b>ගෙවිය යුතු මුදල:</b> <code>Rs. {price}</code>\n\n"
-            f"{BANK_DETAILS}\n\n"
-            f"⚠️ <b>අනිවාර්යයි (Very Important):</b>\n"
-            f"මුදල් තැන්පත් කරන විට Reference/Remarks සඳහා පහත ඔබගේ Unique Code එක ඇතුළත් කරන්න:\n"
-            f"🔑 <b>ඔබගේ Reference Code එක:</b> <code>{ref}</code>\n\n"
-            f"📸 මුදල් ගෙවූ පසු Payment Slip හෝ Screenshot එක ඔබගේ User ID (<code>{user_id}</code>) සමඟ Admin වෙත එවන්න."
+            f"👑 <b>Cinex LK VIP Pass - {label}</b>\n\n💰 <b>ගෙවිය යුතු මුදල:</b> <code>Rs. {price}</code>\n\n"
+            f"{BANK_DETAILS}\n\n⚠️ <b>Reference Code එක:</b> <code>{ref}</code>\n\n"
+            f"📸 Slip එක User ID (<code>{user_id}</code>) සමඟ Admin වෙත එවන්න."
         )
         btns = [[InlineKeyboardButton("📩 Send Slip to Admin", url=admin_link)]] if admin_link else []
         await callback.message.reply_text(text, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
@@ -1429,8 +1249,6 @@ async def setup_file_bot_webhook():
                     data = await resp.json()
                     if data.get("ok"):
                         print(f"🔗 File Bot Webhook Linked: {webhook_url}", flush=True)
-                    else:
-                        print(f"⚠️ Webhook Warning: {data.get('description')}", flush=True)
         except Exception as e:
             print(f"Webhook Exception: {e}", flush=True)
 
@@ -1450,7 +1268,6 @@ async def main():
     print(f"🌐 Web Engine Live on port {PORT}", flush=True)
 
     await setup_file_bot_webhook()
-
     asyncio.create_task(auto_kick_expired_vips())
 
     await idle()
