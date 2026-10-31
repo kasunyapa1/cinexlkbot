@@ -319,7 +319,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER & AD-GATEWAY (TRUE CROSS-PLATFORM TIME VERIFY)
+# WEB SERVER & AD-GATEWAY (BULLETPROOF DWELL-TIME VERIFIER)
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -334,6 +334,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
+# GUARANTEED MONETAG REVENUE & ANTI-BYPASS GATEWAY
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -368,20 +369,6 @@ SAME_PAGE_GATE_HTML = """
         h2 {{ margin: 0 0 12px; font-size: 20px; color: #ffffff; }}
         p {{ font-size: 14px; color: #90a4ae; margin-bottom: 18px; line-height: 1.5; }}
         
-        .count-circle {{ 
-            width: 60px; 
-            height: 60px; 
-            border-radius: 50%; 
-            border: 4px solid #5da9e9; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center; 
-            font-weight: bold; 
-            font-size: 24px; 
-            color: #5da9e9; 
-            margin: 0 auto 20px; 
-            background: #0b1118; 
-        }}
         .btn {{ 
             display: block; 
             width: 100%; 
@@ -463,12 +450,10 @@ SAME_PAGE_GATE_HTML = """
 
         <div id="normal-flow">
             <div id="status-box"></div>
-            <p id="desc">පහත Button එක Click කර Sponsor Ad එක විවෘත කර <b>තත්පර 15ක්</b> රැඳී සිටින්න.</p>
+            <p id="desc">පහත Button එක ඔබා Ad පිටුවේ <b>තත්පර 15ක්</b> රැඳී සිටින්න. ඉන්පසු චිත්‍රපටය Unlock කරගන්න.</p>
 
-            <div class="count-circle" id="count">15</div>
-
-            <button id="adBtn" class="btn btn-ad" onclick="handleClickAd()">🔗 View Sponsor Ad (15 Seconds)</button>
-            <button id="checkBtn" class="btn btn-check" onclick="checkVerification()">⚡ Check & Verify Movie Link</button>
+            <button id="adBtn" class="btn btn-ad" onclick="handleClickAd()">🔗 1. Open Sponsor Ad (15 Seconds)</button>
+            <button id="checkBtn" class="btn btn-check" onclick="checkVerification()">⚡ 2. Check & Unlock Movie Link</button>
             <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
 
             <div class="antivirus-note">
@@ -479,65 +464,74 @@ SAME_PAGE_GATE_HTML = """
     </div>
 
     <script>
-        // Block Brave completely
         if (navigator.brave) {{
             document.getElementById('brave-block-box').style.display = 'block';
             document.getElementById('normal-flow').style.display = 'none';
         }}
 
-        let clickTimestamp = 0;
-        let isVerified = false;
+        const TIME_KEY = 'click_time_{token}';
         const REQUIRED_SECONDS = 15;
 
+        // Restore state if page was restored on mobile
+        let savedTime = localStorage.getItem(TIME_KEY);
+        if (savedTime) {{
+            document.getElementById('adBtn').innerText = '🔄 නැවත Ad එක Open කරන්න';
+            document.getElementById('checkBtn').style.display = 'block';
+        }}
+
         function handleClickAd() {{
-            clickTimestamp = Date.now();
+            const now = Date.now();
+            localStorage.setItem(TIME_KEY, now);
             window.open('{ad_url}', '_blank');
 
-            document.getElementById('adBtn').style.display = 'none';
             document.getElementById('checkBtn').style.display = 'block';
+            document.getElementById('adBtn').innerText = '🔄 නැවත Ad එක Open කරන්න';
 
             const statusBox = document.getElementById('status-box');
             statusBox.className = 'info-blue';
             statusBox.style.display = 'block';
-            statusBox.innerHTML = '⏳ <b>Ad එක විවෘත විය:</b> කරුණාකර තත්පර 15ක් Ad පිටුවේ රැඳී සිට නැවත මෙම Tab එකට පැමිණෙන්න.';
-            
-            document.getElementById('desc').innerText = 'Ad එක නැරඹීමෙන් පසු පහත Button එක ඔබන්න:';
+            statusBox.innerHTML = '⏳ <b>Ad එක විවෘත විය:</b> කරුණාකර තත්පර 15ක් එම පිටුවේ රැඳී සිට නැවත මෙම Tab එකට පැමිණ <b>"Check & Unlock"</b> ඔබන්න.';
         }}
 
         function checkVerification() {{
-            if (isVerified || clickTimestamp === 0) return;
-
-            const now = Date.now();
-            const elapsed = Math.floor((now - clickTimestamp) / 1000);
+            let clickTime = localStorage.getItem(TIME_KEY);
             const statusBox = document.getElementById('status-box');
 
+            if (!clickTime) {{
+                statusBox.className = 'warn-red';
+                statusBox.style.display = 'block';
+                statusBox.innerHTML = '⚠️ කරුණාකර මුලින්ම <b>"1. Open Sponsor Ad"</b> Button එක click කර Ad එක විවෘත කරන්න.';
+                return;
+            }}
+
+            const elapsed = Math.floor((Date.now() - parseInt(clickTime)) / 1000);
+
             if (elapsed >= REQUIRED_SECONDS) {{
-                // Passed: User genuinely spent 15 seconds
-                isVerified = true;
+                // Genuine 15s visit passed
+                localStorage.removeItem(TIME_KEY);
                 statusBox.style.display = 'none';
-                document.getElementById('count').style.display = 'none';
                 document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:';
+                document.getElementById('adBtn').style.display = 'none';
                 document.getElementById('checkBtn').style.display = 'none';
                 document.getElementById('doneBtn').style.display = 'block';
             }} else {{
-                // Failed: User came back too early or Antivirus/AdBlock closed it immediately
+                // Blocked by Antivirus/AdBlock immediately or came back too early
                 const remaining = REQUIRED_SECONDS - elapsed;
-                document.getElementById('count').innerText = remaining;
                 statusBox.className = 'warn-red';
                 statusBox.style.display = 'block';
-                statusBox.innerHTML = '⛔ <b>කාලය මදි හෝ Ad එක Block වී ඇත!</b><br>ඔබ රැඳී සිටියේ තත්පර ' + elapsed + 'ක් පමණි. කරුණාකර Ad එක තව <b>තත්පර ' + remaining + 'ක්</b> නරඹන්න (Antivirus මඟින් Ad එක Block කර ඇත්නම් එය Pause කරන්න).';
+                statusBox.innerHTML = '⛔ <b>කාලය මදි හෝ Ad එක Block වී ඇත!</b><br>ඔබ රැඳී සිටියේ තත්පර ' + elapsed + 'ක් පමණි. චිත්‍රපටය ලබාගැනීමට Ad එක තව <b>තත්පර ' + remaining + 'ක්</b> නරඹන්න (Antivirus මඟින් Ad එක Block කර ඇත්නම් Pause කරන්න).';
             }}
         }}
 
-        // Auto-check when switching back to tab
+        // Auto trigger check when returning to tab
         window.addEventListener('focus', function() {{
-            if (clickTimestamp > 0 && !isVerified) {{
+            if (localStorage.getItem(TIME_KEY)) {{
                 checkVerification();
             }}
         }});
 
         document.addEventListener('visibilitychange', function() {{
-            if (!document.hidden && clickTimestamp > 0 && !isVerified) {{
+            if (!document.hidden && localStorage.getItem(TIME_KEY)) {{
                 checkVerification();
             }}
         }});
