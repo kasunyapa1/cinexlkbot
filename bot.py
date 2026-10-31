@@ -319,7 +319,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER, ROBUST AD-GATEWAY & FILE BOT WEBHOOK
+# WEB SERVER, SOLID TIMESTAMP TIMER & FILE BOT WEBHOOK
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -334,7 +334,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# SOLID GATEWAY: KILLS BRAVE, SMOOTH FLOW ON CHROME / FIREFOX / SAFARI
+# 100% UNFREEZABLE MOBILE & PC TIMESTAMP COUNTDOWN GATEWAY
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -400,7 +400,6 @@ SAME_PAGE_GATE_HTML = """
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
 
-        /* BRAVE BLOCKER SCREEN */
         #brave-block-box {{
             display: none;
             background: #2a1215;
@@ -410,17 +409,8 @@ SAME_PAGE_GATE_HTML = """
             margin-bottom: 20px;
             text-align: left;
         }}
-        #brave-block-box h4 {{
-            margin: 0 0 8px 0;
-            color: #ef4444;
-            font-size: 16px;
-        }}
-        #brave-block-box p {{
-            margin: 0;
-            color: #fca5a5;
-            font-size: 13px;
-            line-height: 1.5;
-        }}
+        #brave-block-box h4 {{ margin: 0 0 8px 0; color: #ef4444; font-size: 16px; }}
+        #brave-block-box p {{ margin: 0; color: #fca5a5; font-size: 13px; line-height: 1.5; }}
     </style>
 </head>
 <body>
@@ -429,12 +419,11 @@ SAME_PAGE_GATE_HTML = """
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
 
-        <!-- Brave users get blocked permanently right here -->
         <div id="brave-block-box">
             <h4>🚫 Brave Browser Blocked!</h4>
             <p>
-                Brave Browser මඟින් Sponsor Ads සහ සත්‍යාපනය අවහිර කරන බැවින් මෙහිදී චිත්‍රපට ලබාගත නොහැක.<br><br>
-                කරුණාකර මෙම පිටුව <b>Google Chrome</b> හෝ වෙනත් සාමාන්‍ය Browser එකකින් විවෘත කරන්න.
+                Brave Browser මඟින් Ads අවහිර කරන බැවින් නොමිලේ චිත්‍රපට ලබාගත නොහැක.<br><br>
+                කරුණාකර මෙම පිටුව <b>Google Chrome</b> එකෙන් විවෘත කරන්න.
             </p>
         </div>
 
@@ -443,14 +432,14 @@ SAME_PAGE_GATE_HTML = """
             
             <div class="count-circle" id="count">8</div>
 
-            <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" rel="noopener noreferrer" onclick="startTimer()">🔗 View Sponsor Ad</a>
+            <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" rel="noopener noreferrer" onclick="startCountDown()">🔗 View Sponsor Ad</a>
             <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
         </div>
     </div>
 
     <script>
-        // STRICT BRAVE CHECK: If Brave browser, kill the page immediately
-        async function checkAndBlockBrave() {{
+        // Check Brave Browser and block
+        async function checkBrave() {{
             try {{
                 if (navigator.brave && await navigator.brave.isBrave()) {{
                     document.getElementById('brave-block-box').style.display = 'block';
@@ -458,31 +447,56 @@ SAME_PAGE_GATE_HTML = """
                 }}
             }} catch(e) {{}}
         }}
-        checkAndBlockBrave();
+        checkBrave();
 
-        // PURE, BULLETPROOF TIMER FOR CHROME AND OTHER BROWSERS
-        let isStarted = false;
-        function startTimer() {{
-            if (isStarted) return;
-            isStarted = true;
+        let targetTime = 0;
+        let timerRunning = false;
 
-            document.getElementById('adBtn').innerText = '⏳ Ad එක විවෘත විය... රැඳී සිටින්න';
+        function startCountDown() {{
+            if (timerRunning) return;
+            timerRunning = true;
+
+            // Target time: Exactly 8 seconds from now (timestamp)
+            targetTime = Date.now() + 8000;
+
+            document.getElementById('adBtn').innerText = '⏳ Ad එක නරඹමින් සිටී...';
             document.getElementById('adBtn').style.opacity = '0.6';
             document.getElementById('adBtn').style.pointerEvents = 'none';
 
-            let sec = 8;
-            const timer = setInterval(() => {{
-                sec--;
-                document.getElementById('count').innerText = sec;
-                if (sec <= 0) {{
-                    clearInterval(timer);
-                    document.getElementById('count').style.display = 'none';
-                    document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය ලබාගත හැක.';
-                    document.getElementById('adBtn').style.display = 'none';
-                    document.getElementById('doneBtn').style.display = 'block';
-                }}
-            }}, 1000);
+            // Active interval loop
+            const loop = setInterval(() => {{
+                updateClock(loop);
+            }}, 500);
         }}
+
+        function updateClock(loop) {{
+            if (!timerRunning) return;
+            const remainingMs = targetTime - Date.now();
+            const sec = Math.ceil(remainingMs / 1000);
+
+            if (sec > 0) {{
+                document.getElementById('count').innerText = sec;
+            }} else {{
+                clearInterval(loop);
+                timerRunning = false;
+                document.getElementById('count').style.display = 'none';
+                document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය වෙත යා හැක.';
+                document.getElementById('adBtn').style.display = 'none';
+                document.getElementById('doneBtn').style.display = 'block';
+            }}
+        }}
+
+        // When user switches back from Ad Tab to this Tab on Mobile Chrome
+        document.addEventListener('visibilitychange', () => {{
+            if (!document.hidden && timerRunning) {{
+                updateClock();
+            }}
+        }});
+        window.addEventListener('focus', () => {{
+            if (timerRunning) {{
+                updateClock();
+            }}
+        }});
     </script>
 </body>
 </html>
