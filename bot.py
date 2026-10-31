@@ -104,7 +104,6 @@ async def auto_kick_expired_vips():
         try:
             now = datetime.utcnow()
 
-            # 1. දින 3කට කලින් REMINDER පණිවිඩය යැවීම
             three_days_later = now + timedelta(days=3)
             reminder_candidates = await vip_users_col.find({
                 "initial_days": {"$gt": 1},
@@ -126,7 +125,6 @@ async def auto_kick_expired_vips():
                 if res.get("ok"):
                     await vip_users_col.update_one({"user_id": uid}, {"$set": {"reminded_3d": True}})
 
-            # 2. කල් ඉකුත් වූ පසු AUTO-KICK කිරීම
             expired_users = await vip_users_col.find({
                 "expiry_date": {"$lt": now},
                 "is_kicked": {"$ne": True}
@@ -321,11 +319,10 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER, TAB-REDIRECT AD GATE, MONETAG SW & FILE BOT WEBHOOK
+# WEB SERVER, STRICT AD-GATEWAY & FILE BOT WEBHOOK
 # =========================================================
 routes = web.RouteTableDef()
 
-# Monetag Service Worker Route for Site Verification
 @routes.get("/sw.js")
 async def monetag_sw_js(request):
     js_content = """self.options = {
@@ -337,7 +334,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# Clean, Browser-Friendly Gate (Works perfectly on Chrome, Blocks on Brave Shields)
+# STRICT AD-GATEWAY: USER CANNOT BYPASS WITHOUT CLICKING AND VIEWING AD
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -437,57 +434,49 @@ SAME_PAGE_GATE_HTML = """
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
 
-        <!-- Alert Shown ONLY when Brave Shields is ON -->
         <div id="adblock-alert-box">
-            <h4>⚠️ Brave Shields On!</h4>
+            <h4>⚠️ Ad Blocker / Brave Shields Detected!</h4>
             <p>
-                චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර ඔබගේ Browser එකේ <b>Brave Shields OFF කර</b> පිටුව Reload කරන්න.<br><br>
-                🦁 <b>Brave Users:</b> Address bar එක ළඟ ඇති Lion Icon එක click කර <b>Shields = OFF (Down)</b> කරන්න.
+                ඔබ Ad Blocker එකක් භාවිත කරන බැවින් Sponsor Ad එක Load නොවීය. චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර Browser එකේ <b>Ad Blocker / Brave Shields OFF කර</b> පිටුව Reload කරන්න.
             </p>
             <button class="btn btn-reload" onclick="location.reload()">🔄 Reload Page</button>
         </div>
 
         <div id="normal-flow">
-            <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
+            <p id="desc">පහත Sponsor Link එක Click කර Ad එක විවෘත කරන්න. ඉන්පසු තත්පර 8ක් රැඳී සිට Telegram Link එක ලබාගන්න.</p>
             
             <div class="count-circle" id="count">8</div>
 
-            <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" onclick="handleClick()">🔗 View Sponsor Ad</a>
+            <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" rel="noopener noreferrer" onclick="handleAdClick()">🔗 View Sponsor Ad</a>
             <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
         </div>
     </div>
 
     <script>
-        let isShieldActive = false;
+        let adClicked = false;
+        let timerStarted = false;
+        let leftPageTime = 0;
 
-        function showShieldWarning() {{
-            isShieldActive = true;
+        function triggerBlockNotice() {{
             document.getElementById('adblock-alert-box').style.display = 'block';
             document.getElementById('normal-flow').style.display = 'none';
         }}
 
-        // Brave Shields Dedicated Checker
-        async function detectBraveShields() {{
-            if (navigator.brave && await navigator.brave.isBrave()) {{
-                // Check if Ad script URL can be fetched by Brave network filter
-                try {{
-                    const res = await fetch('{ad_url}', {{ method: 'HEAD', mode: 'no-cors', cache: 'no-store' }});
-                }} catch (e) {{
-                    showShieldWarning();
-                }}
-            }}
-        }}
-        detectBraveShields();
+        // When user clicks the Ad button
+        function handleAdClick() {{
+            adClicked = true;
+            leftPageTime = Date.now();
+            document.getElementById('adBtn').innerText = '⏳ Ad එක නැරඹීම තහවුරු කරමින්...';
+            document.getElementById('adBtn').style.opacity = '0.7';
+            document.getElementById('adBtn').style.pointerEvents = 'none';
 
-        let timerStarted = false;
-        function handleClick() {{
-            if (isShieldActive) return;
+            // Start countdown only after clicking ad
+            setTimeout(startStrictTimer, 1000);
+        }}
+
+        function startStrictTimer() {{
             if (timerStarted) return;
             timerStarted = true;
-            
-            document.getElementById('adBtn').innerText = '⏳ Ad එක නරඹමින් සිටී...';
-            document.getElementById('adBtn').style.opacity = '0.6';
-            document.getElementById('adBtn').style.pointerEvents = 'none';
 
             let sec = 8;
             const timer = setInterval(() => {{
@@ -496,7 +485,7 @@ SAME_PAGE_GATE_HTML = """
                 if (sec <= 0) {{
                     clearInterval(timer);
                     document.getElementById('count').style.display = 'none';
-                    document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය වෙත යා හැක.';
+                    document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය ලබාගත හැක.';
                     document.getElementById('adBtn').style.display = 'none';
                     document.getElementById('doneBtn').style.display = 'block';
                 }}
@@ -797,26 +786,22 @@ async def universal_message_handler(client: Client, message: Message):
     if not message.chat:
         return
 
-    # Bots ලා හෝ Bot විසින්ම යවන පණිවිඩ Movie Request ලෙස වැරදියට සැකසීම වැළැක්වීම
     if message.from_user and message.from_user.is_bot:
         return
 
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
 
-    # 1. Storage Channel Uploads
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
-    # 2. Private Chats
     chat_type_val = str(getattr(message.chat.type, "value", message.chat.type)).lower()
     if "private" in chat_type_val:
         text = (message.text or "").strip()
         user_id = message.from_user.id if message.from_user else 0
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
-        # /stats Command
         if text == "/stats":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -840,7 +825,6 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(stats_msg)
             return
 
-        # /resetallcatalog Command
         if text == "/resetallcatalog":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -854,7 +838,6 @@ async def universal_message_handler(client: Client, message: Message):
             )
             return
 
-        # /publishrange <START_ID> <END_ID> Command
         if text.startswith("/publishrange"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -876,7 +859,6 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ සාර්ථකයි! ID <code>{start_id}</code> සිට <code>{end_id}</code> දක්වා Movies <code>{res.modified_count}</code>ක් Catalog එකට Publish කරන ලදී.")
             return
 
-        # /publish <ID1> <ID2> ... Command
         if text.startswith("/publish") and not text.startswith("/publishrange"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -897,7 +879,6 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ සාර්ථකයි! Movies <code>{res.modified_count}</code>ක් Catalog එකට Add කරන ලදී.")
             return
 
-        # /unpublish <ID1> <ID2> ... Command
         if text.startswith("/unpublish"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -913,13 +894,11 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"🚫 Movies <code>{res.modified_count}</code>ක් Catalog එකෙන් ඉවත් කරන ලදී.")
             return
 
-        # /movies or /list Command
         if text in ["/movies", "/list"]:
             catalog_text, catalog_markup = await get_movies_page(page=1, user_id=user_id)
             await message.reply_text(catalog_text, reply_markup=catalog_markup)
             return
 
-        # /storage Command
         if text == "/storage":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -946,7 +925,6 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(list_text)
             return
 
-        # /viplist Command
         if text == "/viplist":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -980,7 +958,6 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(vip_text, reply_markup=InlineKeyboardMarkup(kick_buttons))
             return
 
-        # /kickvip Command
         if text.startswith("/kickvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -998,7 +975,6 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ User <code>{target_uid}</code> VIP Channel එකෙන් Kick කර VIP සාමාජිකත්වය අවලංගු කරන ලදී.")
             return
 
-        # /addvip <USER_ID> [DAYS] Command
         if text.startswith("/addvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -1049,7 +1025,6 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text(f"⚠️ Invite Error: {e}")
             return
 
-        # /start Command
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
@@ -1131,9 +1106,6 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(welcome_text, reply_markup=welcome_markup)
             return
 
-        # =========================================================
-        # MOVIE REQUEST SYSTEM
-        # =========================================================
         req_movie = ""
         if text.startswith("/req"):
             parts = text.split(maxsplit=1)
@@ -1186,21 +1158,18 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         me = await client.get_me()
         BOT_USERNAME = me.username
 
-    # ACTION: SHOW MOVIES LIST FROM BUTTON
     if data == "show_movies_list":
         await callback.answer()
         c_text, c_markup = await get_movies_page(page=1, user_id=user_id)
         await callback.message.reply_text(c_text, reply_markup=c_markup)
         return
 
-    # ACTION: SHOW VIP MENU
     if data == "show_vip_menu":
         await callback.answer()
         vip_text, vip_markup = get_vip_selection_menu()
         await callback.message.reply_text(vip_text, reply_markup=vip_markup)
         return
 
-    # ACTION: PAGINATION NAVIGATION
     if data.startswith("page_"):
         await callback.answer()
         try:
@@ -1215,7 +1184,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         await callback.answer("📄 අදාළ Movie අංකය උඩ click කර ලබාගන්න.", show_alert=False)
         return
 
-    # ACTION: KICK VIP USER
     if data.startswith("kick_"):
         if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
             await callback.answer("❌ ඔබට මෙම ක්‍රියාව කිරීමට අවසර නැත.", show_alert=True)
@@ -1232,7 +1200,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
-    # ACTION 1: POST TO MAIN CHANNEL
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -1272,7 +1239,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
-    # ACTION 2: POST TO VIP CHANNEL
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -1329,7 +1295,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ VIP Fail: {err_desc[:100]}", show_alert=True)
         return
 
-    # USER VERIFY CALLBACK
     if data.startswith("verify_"):
         await callback.answer()
         param = data.replace("verify_", "")
@@ -1349,7 +1314,6 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
-    # VIP PLAN SELECTED
     if data.startswith("buyplan_"):
         await callback.answer()
         plan_key = data.replace("buyplan_", "")
@@ -1443,7 +1407,6 @@ async def main():
 
     await setup_file_bot_webhook()
 
-    # Start the automated 10-minute expiry kick & 3-day reminder worker
     asyncio.create_task(auto_kick_expired_vips())
 
     await idle()
