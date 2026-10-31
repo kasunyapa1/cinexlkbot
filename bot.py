@@ -104,6 +104,7 @@ async def auto_kick_expired_vips():
         try:
             now = datetime.utcnow()
 
+            # 1. දින 3කට කලින් REMINDER පණිවිඩය යැවීම
             three_days_later = now + timedelta(days=3)
             reminder_candidates = await vip_users_col.find({
                 "initial_days": {"$gt": 1},
@@ -125,6 +126,7 @@ async def auto_kick_expired_vips():
                 if res.get("ok"):
                     await vip_users_col.update_one({"user_id": uid}, {"$set": {"reminded_3d": True}})
 
+            # 2. කල් ඉකුත් වූ පසු AUTO-KICK කිරීම
             expired_users = await vip_users_col.find({
                 "expiry_date": {"$lt": now},
                 "is_kicked": {"$ne": True}
@@ -319,10 +321,11 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER, SOLID TIMESTAMP TIMER & FILE BOT WEBHOOK
+# WEB SERVER, TAB-REDIRECT AD GATE, MONETAG SW & FILE BOT WEBHOOK
 # =========================================================
 routes = web.RouteTableDef()
 
+# Monetag Service Worker Route for Site Verification
 @routes.get("/sw.js")
 async def monetag_sw_js(request):
     js_content = """self.options = {
@@ -334,7 +337,12 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# 100% UNFREEZABLE MOBILE & PC TIMESTAMP COUNTDOWN GATEWAY
+# Fake bait script to catch ad blockers
+@routes.get("/ads.js")
+async def fake_ad_script(request):
+    return web.Response(text="var canRunAds = true;", content_type="application/javascript")
+
+# Upgraded Gate with Brave Shields & AdBlock Detection
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -342,6 +350,7 @@ SAME_PAGE_GATE_HTML = """
     <meta charset="utf-8">
     <title>Sponsor Verification - Cinex LK</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/ads.js"></script>
     <style>
         * {{ box-sizing: border-box; }}
         body, html {{ 
@@ -367,8 +376,7 @@ SAME_PAGE_GATE_HTML = """
         }}
         .step-label {{ font-size: 13px; font-weight: bold; color: #5da9e9; letter-spacing: 1px; margin-bottom: 8px; }}
         h2 {{ margin: 0 0 12px; font-size: 20px; color: #ffffff; }}
-        p {{ font-size: 14px; color: #90a4ae; margin-bottom: 20px; line-height: 1.5; }}
-        
+        p {{ font-size: 14px; color: #90a4ae; margin-bottom: 24px; line-height: 1.5; }}
         .count-circle {{ 
             width: 60px; 
             height: 60px; 
@@ -400,103 +408,104 @@ SAME_PAGE_GATE_HTML = """
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
 
-        #brave-block-box {{
+        /* AdBlock / Brave Shields Warning Modal */
+        #adblock-overlay {{
             display: none;
-            background: #2a1215;
-            border: 2px solid #ef4444;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 20px;
-            text-align: left;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(11, 17, 24, 0.95);
+            z-index: 99999;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
         }}
-        #brave-block-box h4 {{ margin: 0 0 8px 0; color: #ef4444; font-size: 16px; }}
-        #brave-block-box p {{ margin: 0; color: #fca5a5; font-size: 13px; line-height: 1.5; }}
+        .adblock-box {{
+            background: #1e293b;
+            border: 2px solid #ef4444;
+            border-radius: 16px;
+            padding: 25px;
+            max-width: 400px;
+            text-align: center;
+            box-shadow: 0 10px 40px rgba(239, 68, 68, 0.3);
+        }}
+        .adblock-box h3 {{ color: #ef4444; margin-top: 0; font-size: 20px; }}
+        .adblock-box p {{ font-size: 14px; color: #cbd5e1; line-height: 1.6; text-align: left; }}
+        .btn-reload {{
+            background: #ef4444; color: white; margin-top: 15px;
+        }}
     </style>
 </head>
 <body>
-
-    <div class="card" id="mainCard">
-        <div class="step-label">VERIFICATION STEP {step} OF 2</div>
-        <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
-
-        <div id="brave-block-box">
-            <h4>🚫 Brave Browser Blocked!</h4>
+    <div id="adblock-overlay">
+        <div class="adblock-box">
+            <h3>⚠️ Ad Blocker / Brave Shields Detected!</h3>
             <p>
-                Brave Browser මඟින් Ads අවහිර කරන බැවින් නොමිලේ චිත්‍රපට ලබාගත නොහැක.<br><br>
-                කරුණාකර මෙම පිටුව <b>Google Chrome</b> එකෙන් විවෘත කරන්න.
+                චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර ඔබගේ Browser එකෙහි <b>Brave Shields</b> හෝ <b>Ad Blocker එක OFF (Pause)</b> කර පහත Button එක මඟින් Reload කරන්න.<br><br>
+                🦁 <b>Brave Users:</b> Search bar එක ළඟ ඇති Lion Icon එක click කර <b>Shields = Down (OFF)</b> කරන්න.
             </p>
-        </div>
-
-        <div id="normal-flow">
-            <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
-            
-            <div class="count-circle" id="count">8</div>
-
-            <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" rel="noopener noreferrer" onclick="startCountDown()">🔗 View Sponsor Ad</a>
-            <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+            <button class="btn btn-reload" onclick="location.reload()">🔄 Reload Page</button>
         </div>
     </div>
 
+    <!-- Hidden Bait to catch CSS hiding AdBlockers -->
+    <div id="ad-banner-check" class="adsbox ad-zone ad-banner pub_300x250 pub_728x90" style="position: absolute; top: -1000px; left: -1000px; width: 1px; height: 1px;"></div>
+
+    <div class="card" id="main-card">
+        <div class="step-label">VERIFICATION STEP {step} OF 2</div>
+        <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
+        <p id="desc">පහත Sponsor Link එක Click කර තත්පර 8ක් රැඳී සිටින්න. එවිට Telegram Link එක සක්‍රිය වේ.</p>
+        
+        <div class="count-circle" id="count">8</div>
+
+        <a id="adBtn" class="btn btn-ad" href="{ad_url}" target="_blank" onclick="startTimer()">🔗 View Sponsor Ad</a>
+        <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
+    </div>
+
     <script>
-        // Check Brave Browser and block
-        async function checkBrave() {{
-            try {{
-                if (navigator.brave && await navigator.brave.isBrave()) {{
-                    document.getElementById('brave-block-box').style.display = 'block';
-                    document.getElementById('normal-flow').style.display = 'none';
-                }}
-            }} catch(e) {{}}
+        let adblockDetected = false;
+
+        function triggerAdBlockNotice() {{
+            adblockDetected = true;
+            document.getElementById('adblock-overlay').style.display = 'flex';
         }}
-        checkBrave();
 
-        let targetTime = 0;
-        let timerRunning = false;
+        // Check 1: Bait Script
+        if (typeof canRunAds === 'undefined') {{
+            triggerAdBlockNotice();
+        }}
 
-        function startCountDown() {{
-            if (timerRunning) return;
-            timerRunning = true;
+        // Check 2: Element Hiding / Brave Shields DOM Block Check
+        window.addEventListener('load', () => {{
+            setTimeout(() => {{
+                const bait = document.getElementById('ad-banner-check');
+                if (!bait || bait.offsetParent === null || bait.offsetHeight === 0 || bait.offsetWidth === 0) {{
+                    triggerAdBlockNotice();
+                }}
+            }}, 300);
+        }});
 
-            // Target time: Exactly 8 seconds from now (timestamp)
-            targetTime = Date.now() + 8000;
-
+        let timerStarted = false;
+        function startTimer() {{
+            if (adblockDetected) return;
+            if (timerStarted) return;
+            timerStarted = true;
             document.getElementById('adBtn').innerText = '⏳ Ad එක නරඹමින් සිටී...';
             document.getElementById('adBtn').style.opacity = '0.6';
             document.getElementById('adBtn').style.pointerEvents = 'none';
 
-            // Active interval loop
-            const loop = setInterval(() => {{
-                updateClock(loop);
-            }}, 500);
-        }}
-
-        function updateClock(loop) {{
-            if (!timerRunning) return;
-            const remainingMs = targetTime - Date.now();
-            const sec = Math.ceil(remainingMs / 1000);
-
-            if (sec > 0) {{
+            let sec = 8;
+            const timer = setInterval(() => {{
+                sec--;
                 document.getElementById('count').innerText = sec;
-            }} else {{
-                clearInterval(loop);
-                timerRunning = false;
-                document.getElementById('count').style.display = 'none';
-                document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය වෙත යා හැක.';
-                document.getElementById('adBtn').style.display = 'none';
-                document.getElementById('doneBtn').style.display = 'block';
-            }}
+                if (sec <= 0) {{
+                    clearInterval(timer);
+                    document.getElementById('count').style.display = 'none';
+                    document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! දැන් ඔබට චිත්‍රපටය වෙත යා හැක.';
+                    document.getElementById('adBtn').style.display = 'none';
+                    document.getElementById('doneBtn').style.display = 'block';
+                }}
+            }}, 1000);
         }}
-
-        // When user switches back from Ad Tab to this Tab on Mobile Chrome
-        document.addEventListener('visibilitychange', () => {{
-            if (!document.hidden && timerRunning) {{
-                updateClock();
-            }}
-        }});
-        window.addEventListener('focus', () => {{
-            if (timerRunning) {{
-                updateClock();
-            }}
-        }});
     </script>
 </body>
 </html>
@@ -792,22 +801,26 @@ async def universal_message_handler(client: Client, message: Message):
     if not message.chat:
         return
 
+    # Bots ලා හෝ Bot විසින්ම යවන පණිවිඩ Movie Request ලෙස වැරදියට සැකසීම වැළැක්වීම
     if message.from_user and message.from_user.is_bot:
         return
 
     chat_clean = str(message.chat.id).replace("-100", "").replace("-", "")
 
+    # 1. Storage Channel Uploads
     if chat_clean == STORAGE_CLEAN or str(message.chat.id) == str(STORAGE_CHANNEL_RAW):
         if message.document or message.video:
             asyncio.create_task(create_storage_preview(client, message))
         return
 
+    # 2. Private Chats
     chat_type_val = str(getattr(message.chat.type, "value", message.chat.type)).lower()
     if "private" in chat_type_val:
         text = (message.text or "").strip()
         user_id = message.from_user.id if message.from_user else 0
         target_delivery_bot = FILE_BOT_USERNAME or BOT_USERNAME
 
+        # /stats Command
         if text == "/stats":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -831,6 +844,7 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(stats_msg)
             return
 
+        # /resetallcatalog Command
         if text == "/resetallcatalog":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -844,6 +858,7 @@ async def universal_message_handler(client: Client, message: Message):
             )
             return
 
+        # /publishrange <START_ID> <END_ID> Command
         if text.startswith("/publishrange"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -865,6 +880,7 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ සාර්ථකයි! ID <code>{start_id}</code> සිට <code>{end_id}</code> දක්වා Movies <code>{res.modified_count}</code>ක් Catalog එකට Publish කරන ලදී.")
             return
 
+        # /publish <ID1> <ID2> ... Command
         if text.startswith("/publish") and not text.startswith("/publishrange"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -885,6 +901,7 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ සාර්ථකයි! Movies <code>{res.modified_count}</code>ක් Catalog එකට Add කරන ලදී.")
             return
 
+        # /unpublish <ID1> <ID2> ... Command
         if text.startswith("/unpublish"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -900,11 +917,13 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"🚫 Movies <code>{res.modified_count}</code>ක් Catalog එකෙන් ඉවත් කරන ලදී.")
             return
 
+        # /movies or /list Command
         if text in ["/movies", "/list"]:
             catalog_text, catalog_markup = await get_movies_page(page=1, user_id=user_id)
             await message.reply_text(catalog_text, reply_markup=catalog_markup)
             return
 
+        # /storage Command
         if text == "/storage":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -931,6 +950,7 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(list_text)
             return
 
+        # /viplist Command
         if text == "/viplist":
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -964,6 +984,7 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(vip_text, reply_markup=InlineKeyboardMarkup(kick_buttons))
             return
 
+        # /kickvip Command
         if text.startswith("/kickvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -981,6 +1002,7 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(f"✅ User <code>{target_uid}</code> VIP Channel එකෙන් Kick කර VIP සාමාජිකත්වය අවලංගු කරන ලදී.")
             return
 
+        # /addvip <USER_ID> [DAYS] Command
         if text.startswith("/addvip"):
             if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
                 return
@@ -1031,6 +1053,7 @@ async def universal_message_handler(client: Client, message: Message):
                 await message.reply_text(f"⚠️ Invite Error: {e}")
             return
 
+        # /start Command
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
             param = parts[1].strip() if len(parts) > 1 else ""
@@ -1112,6 +1135,9 @@ async def universal_message_handler(client: Client, message: Message):
             await message.reply_text(welcome_text, reply_markup=welcome_markup)
             return
 
+        # =========================================================
+        # MOVIE REQUEST SYSTEM
+        # =========================================================
         req_movie = ""
         if text.startswith("/req"):
             parts = text.split(maxsplit=1)
@@ -1164,18 +1190,21 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         me = await client.get_me()
         BOT_USERNAME = me.username
 
+    # ACTION: SHOW MOVIES LIST FROM BUTTON
     if data == "show_movies_list":
         await callback.answer()
         c_text, c_markup = await get_movies_page(page=1, user_id=user_id)
         await callback.message.reply_text(c_text, reply_markup=c_markup)
         return
 
+    # ACTION: SHOW VIP MENU
     if data == "show_vip_menu":
         await callback.answer()
         vip_text, vip_markup = get_vip_selection_menu()
         await callback.message.reply_text(vip_text, reply_markup=vip_markup)
         return
 
+    # ACTION: PAGINATION NAVIGATION
     if data.startswith("page_"):
         await callback.answer()
         try:
@@ -1190,6 +1219,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
         await callback.answer("📄 අදාළ Movie අංකය උඩ click කර ලබාගන්න.", show_alert=False)
         return
 
+    # ACTION: KICK VIP USER
     if data.startswith("kick_"):
         if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
             await callback.answer("❌ ඔබට මෙම ක්‍රියාව කිරීමට අවසර නැත.", show_alert=True)
@@ -1206,6 +1236,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             pass
         return
 
+    # ACTION 1: POST TO MAIN CHANNEL
     if data.startswith("post_main_"):
         msg_id = int(data.replace("post_main_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -1245,6 +1276,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ Main Fail: {str(e)[:100]}", show_alert=True)
         return
 
+    # ACTION 2: POST TO VIP CHANNEL
     if data.startswith("post_vip_"):
         msg_id = int(data.replace("post_vip_", ""))
         caption = callback.message.caption or callback.message.text or ""
@@ -1301,6 +1333,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer(f"❌ VIP Fail: {err_desc[:100]}", show_alert=True)
         return
 
+    # USER VERIFY CALLBACK
     if data.startswith("verify_"):
         await callback.answer()
         param = data.replace("verify_", "")
@@ -1320,6 +1353,7 @@ async def global_callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("❌ කරුණාකර Channels 2ටම Join වී නැවත Verify ඔබන්න.", show_alert=True)
         return
 
+    # VIP PLAN SELECTED
     if data.startswith("buyplan_"):
         await callback.answer()
         plan_key = data.replace("buyplan_", "")
@@ -1413,6 +1447,7 @@ async def main():
 
     await setup_file_bot_webhook()
 
+    # Start the automated 10-minute expiry kick & 3-day reminder worker
     asyncio.create_task(auto_kick_expired_vips())
 
     await idle()
