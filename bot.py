@@ -319,7 +319,7 @@ async def deliver_file_bot_movie(chat_id: int, message_id: int, is_vip: bool = F
     return False
 
 # =========================================================
-# WEB SERVER & BULLETPROOF ZERO-FREEZE GATEWAY
+# WEB SERVER & BULLETPROOF REAL-TIME AD-GATEWAY (15s)
 # =========================================================
 routes = web.RouteTableDef()
 
@@ -334,7 +334,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# MOBILE/PC 100% WORKING GATE: TIMEOUT FREEZE-PROOF
+# STRICT 15-SECOND AD DWELL VERIFIER (PHONE & PC BULLETPROOF)
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -369,20 +369,6 @@ SAME_PAGE_GATE_HTML = """
         h2 {{ margin: 0 0 12px; font-size: 20px; color: #ffffff; }}
         p {{ font-size: 14px; color: #90a4ae; margin-bottom: 20px; line-height: 1.5; }}
         
-        .count-circle {{ 
-            width: 60px; 
-            height: 60px; 
-            border-radius: 50%; 
-            border: 4px solid #5da9e9; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center; 
-            font-weight: bold; 
-            font-size: 24px; 
-            color: #5da9e9; 
-            margin: 0 auto 20px; 
-            background: #0b1118; 
-        }}
         .btn {{ 
             display: block; 
             width: 100%; 
@@ -396,11 +382,28 @@ SAME_PAGE_GATE_HTML = """
             border: none;
             box-sizing: border-box;
         }}
-        .btn-waiting {{ background: #233446; color: #90a4ae; cursor: not-allowed; }}
-        .btn-ad {{ display: none; background: #2b7de9; color: white; }}
+        .btn-ad {{ background: #2b7de9; color: white; }}
         .btn-ad:hover {{ background: #1a68d1; }}
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
+
+        #status-box {{
+            display: none;
+            background: #0f2b48;
+            border: 1px solid #1e5a96;
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 18px;
+            text-align: left;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #cbd5e1;
+        }}
+        #status-box.warn {{
+            background: #2a1215;
+            border-color: #ef4444;
+            color: #fca5a5;
+        }}
 
         #brave-block-box {{
             display: none;
@@ -430,54 +433,70 @@ SAME_PAGE_GATE_HTML = """
         </div>
 
         <div id="normal-flow">
-            <p id="desc">කරුණාකර තත්පර 8ක් රැඳී සිට පහත Sponsor Link එක විවෘත කරන්න.</p>
-            
-            <div class="count-circle" id="count">8</div>
+            <div id="status-box"></div>
+            <p id="desc">පහත Button එක ඔබා Ad එක <b>තත්පර 15ක් නරඹන්න</b>. ඉන්පසු ආපසු මෙම පිටුවට පැමිණ චිත්‍රපටය ලබාගන්න.</p>
 
-            <!-- Wait button during countdown -->
-            <button id="waitBtn" class="btn btn-waiting" disabled>⏳ රැඳී සිටින්න...</button>
+            <!-- Action Button -->
+            <button id="adBtn" class="btn btn-ad" onclick="handleClickAd()">🔗 View Sponsor Ad (15 Seconds)</button>
             
-            <!-- Mandatory Ad Click Button -->
-            <button id="adBtn" class="btn btn-ad" onclick="unlockMovieLink()">🔗 View Sponsor Ad & Unlock</button>
-            
-            <!-- Telegram Link -->
+            <!-- Telegram Link (Revealed strictly after verified 15s dwell) -->
             <a id="doneBtn" class="btn btn-done" href="https://t.me/{bot_username}?start={token}">✅ Go to Telegram</a>
         </div>
     </div>
 
     <script>
-        // Brave Browser Block
+        // Block Brave completely
         if (navigator.brave) {{
             document.getElementById('brave-block-box').style.display = 'block';
             document.getElementById('normal-flow').style.display = 'none';
         }}
 
-        // AUTO-RUN TIMER AS SOON AS PAGE OPENS (NO FREEZE)
-        let timeLeft = 8;
-        let countDisplay = document.getElementById('count');
-        let waitBtn = document.getElementById('waitBtn');
-        let adBtn = document.getElementById('adBtn');
+        let adClickTimestamp = 0;
+        let isCompleted = false;
+        const REQUIRED_SECONDS = 15;
 
-        let interval = setInterval(function() {{
-            timeLeft--;
-            if (timeLeft > 0) {{
-                countDisplay.innerText = timeLeft;
-            }} else {{
-                clearInterval(interval);
-                countDisplay.style.display = 'none';
-                waitBtn.style.display = 'none';
-                adBtn.style.display = 'block';
-                document.getElementById('desc').innerText = '👇 චිත්‍රපටය ලබාගැනීමට පහත Sponsor Ad එක Click කරන්න:';
-            }}
-        }}, 1000);
-
-        // User MUST click this button: Ad opens + Telegram link reveals
-        function unlockMovieLink() {{
+        function handleClickAd() {{
+            adClickTimestamp = Date.now();
             window.open('{ad_url}', '_blank');
-            adBtn.style.display = 'none';
-            document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය වෙත යන්න:';
-            document.getElementById('doneBtn').style.display = 'block';
+
+            const statusBox = document.getElementById('status-box');
+            statusBox.className = '';
+            statusBox.style.display = 'block';
+            statusBox.innerHTML = '⏳ <b>Ad එක විවෘත විය:</b> කරුණාකර තත්පර 15ක් එම පිටුවේ රැඳී සිට නැවත මෙම Tab එකට එන්න.';
+            
+            document.getElementById('adBtn').innerText = '🔄 නැවත Ad එක Open කරන්න';
         }}
+
+        // Verify strictly when user returns to this tab
+        function verifyReturn() {{
+            if (isCompleted || adClickTimestamp === 0) return;
+
+            const timeSpentSeconds = Math.floor((Date.now() - adClickTimestamp) / 1000);
+            const statusBox = document.getElementById('status-box');
+
+            if (timeSpentSeconds >= REQUIRED_SECONDS) {{
+                // Passed: user genuinely stayed 15 seconds on ad
+                isCompleted = true;
+                statusBox.style.display = 'none';
+                document.getElementById('desc').innerText = '🎉 සත්‍යාපනය සාර්ථකයි! චිත්‍රපටය ලබාගැනීමට පහත Button එක ඔබන්න:';
+                document.getElementById('adBtn').style.display = 'none';
+                document.getElementById('doneBtn').style.display = 'block';
+            }} else {{
+                // Failed: user came back too early (no money for us)
+                const remaining = REQUIRED_SECONDS - timeSpentSeconds;
+                statusBox.className = 'warn';
+                statusBox.style.display = 'block';
+                statusBox.innerHTML = '⚠️ <b>කාලය මදි!</b> ඔබ රැඳී සිටියේ තත්පර ' + timeSpentSeconds + 'ක් පමණි. කරුණාකර Ad එක තව <b>තත්පර ' + remaining + 'ක්</b> නරඹන්න.';
+            }}
+        }}
+
+        // Catch tab switch on Mobile Chrome and PC
+        window.addEventListener('focus', verifyReturn);
+        document.addEventListener('visibilitychange', function() {{
+            if (!document.hidden) {{
+                verifyReturn();
+            }}
+        }});
     </script>
 </body>
 </html>
@@ -1072,7 +1091,7 @@ async def universal_message_handler(client: Client, message: Message):
 
                 step1_url = f"{BASE_URL}/gate/step1/{user_id}/{mid}" if BASE_URL else PRIMARY_AD_LINK
                 await message.reply_text(
-                    "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 8ක් රැඳී සිටින්න:",
+                    "🎬 <b>Download Verification (Step 1 of 2):</b>\n\nනොමිලේ ලබාගැනීමට පහත Sponsor Link එක විවෘත කර තත්පර 15ක් රැඳී සිටින්න:",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Open Sponsor Link 1", url=step1_url)]])
                 )
                 return
