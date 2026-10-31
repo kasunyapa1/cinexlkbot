@@ -337,7 +337,7 @@ importScripts('https://3nbf4.com/act/files/service-worker.min.js?r=sw');
 """
     return web.Response(text=js_content, content_type="application/javascript")
 
-# Upgraded Bulletproof Brave & AdBlock Detector Gate
+# Clean, Browser-Friendly Gate (Works perfectly on Chrome, Blocks on Brave Shields)
 SAME_PAGE_GATE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -402,7 +402,6 @@ SAME_PAGE_GATE_HTML = """
         .btn-done {{ display: none; background: #2fa955; color: white; }}
         .btn-done:hover {{ background: #268d46; }}
 
-        /* Unblockable Warning Box Inside Card */
         #adblock-alert-box {{
             display: none;
             background: #2a1215;
@@ -431,9 +430,6 @@ SAME_PAGE_GATE_HTML = """
             font-size: 13px;
         }}
     </style>
-
-    <!-- Ad Network Bait Script (Brave Shields instantly blocks this file) -->
-    <script src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js" onerror="shieldDetected()" async></script>
 </head>
 <body>
 
@@ -441,12 +437,12 @@ SAME_PAGE_GATE_HTML = """
         <div class="step-label">VERIFICATION STEP {step} OF 2</div>
         <h2>චිත්‍රපටය බාගත කිරීමට පෙර</h2>
 
-        <!-- Alert Shown When Shields/AdBlock is Active -->
+        <!-- Alert Shown ONLY when Brave Shields is ON -->
         <div id="adblock-alert-box">
-            <h4>⚠️ Brave Shields / Ad Blocker On!</h4>
+            <h4>⚠️ Brave Shields On!</h4>
             <p>
-                චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර ඔබගේ Browser එකේ <b>Brave Shields</b> හෝ <b>Ad Blocker එක OFF කර</b> Refresh කරන්න.<br><br>
-                🦁 <b>Brave Users:</b> Address bar එක ළඟ ඇති Lion Icon එක click කර <b>Shields = OFF</b> කරන්න.
+                චිත්‍රපටය <b>නොමිලේ ලබාගැනීමට</b> කරුණාකර ඔබගේ Browser එකේ <b>Brave Shields OFF කර</b> පිටුව Reload කරන්න.<br><br>
+                🦁 <b>Brave Users:</b> Address bar එක ළඟ ඇති Lion Icon එක click කර <b>Shields = OFF (Down)</b> කරන්න.
             </p>
             <button class="btn btn-reload" onclick="location.reload()">🔄 Reload Page</button>
         </div>
@@ -464,21 +460,24 @@ SAME_PAGE_GATE_HTML = """
     <script>
         let isShieldActive = false;
 
-        function shieldDetected() {{
+        function showShieldWarning() {{
             isShieldActive = true;
             document.getElementById('adblock-alert-box').style.display = 'block';
             document.getElementById('normal-flow').style.display = 'none';
         }}
 
-        // Backup Check: If Brave blocks the script silently without triggering onerror
-        window.addEventListener('load', () => {{
-            setTimeout(() => {{
-                // Checking if Google Ad object is undefined (blocked)
-                if (typeof window.adsbygoogle === 'undefined') {{
-                    shieldDetected();
+        // Brave Shields Dedicated Checker
+        async function detectBraveShields() {{
+            if (navigator.brave && await navigator.brave.isBrave()) {{
+                // Check if Ad script URL can be fetched by Brave network filter
+                try {{
+                    const res = await fetch('{ad_url}', {{ method: 'HEAD', mode: 'no-cors', cache: 'no-store' }});
+                }} catch (e) {{
+                    showShieldWarning();
                 }}
-            }}, 500);
-        }});
+            }}
+        }}
+        detectBraveShields();
 
         let timerStarted = false;
         function handleClick() {{
